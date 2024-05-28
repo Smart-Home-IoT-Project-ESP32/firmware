@@ -10,6 +10,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  WIFI_SSID: ssid
+  WIFI_PASS: pass
 
 jobs:
   rust-checks:
@@ -36,7 +38,5 @@ jobs:
           ldproxy: true
       - name: Enable caching
         uses: Swatinem/rust-cache@v2
-      - name: Set env
-        uses: export WIFI_SSID=ssid && export WIFI_PASS=pass
       - name: Run command
         run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
