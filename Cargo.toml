@@ -1,7 +1,11 @@
 [package]
 name = "firmware"
 version = "0.1.0"
-authors = ["Lorenzo Della Giustina <dellagiustina.lorenzo@gmail.com>"]
+authors = [
+    "Gaia Simeoni <>",
+    "Leonardo Danelutti <>",
+    "Lorenzo Della Giustina <dellagiustina.lorenzo@gmail.com>",
+]
 edition = "2021"
 resolver = "2"
 rust-version = "1.71"
