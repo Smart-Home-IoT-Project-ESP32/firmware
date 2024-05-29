@@ -33,12 +33,21 @@ embassy = [
 
 [dependencies]
 # Esp
+esp-idf-hal = { version = "0.43.1" }
 esp-idf-svc = { version = "0.48", default-features = false }
+embedded-hal = { version = "1.0.0" }
+embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7" }
 embedded-svc = { version = "0.27.1" }
+embedded-sdmmc = "0.4.0"
+
+# Libraries
+messages = { git = "ssh://git@github.com/Smart-Home-IoT-Project-ESP32/messages.git", default-features = false }
 
 # Generic
+heapless = "0.8.0"
 log = { version = "0.4", default-features = false }
 anyhow = { version = "1.0.86" }
+chrono = { version = "0.4.31", default-features = false }
 
 [build-dependencies]
 embuild = "0.31.3"
