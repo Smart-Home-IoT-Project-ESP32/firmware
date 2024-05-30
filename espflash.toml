@@ -1,0 +1,2 @@
+baudrate = 1000000
+partition_table = "./partitions.csv"
