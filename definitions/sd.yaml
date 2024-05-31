@@ -1,0 +1,16 @@
+- name: "SD card status"
+  description: "SD card status."
+  id:
+    message-std: 0x36
+    node-std: 0x0
+  fields:
+    - name: "SD card status"
+      description: "Status of the SD card (connected or disconnected)."
+      content:
+        variable:
+          type: bool
+    - name: "Padding"
+      description: "Padding of 7 bits"
+      content:
+          padding:
+            bits: 7
