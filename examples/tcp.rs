@@ -8,7 +8,6 @@ use std::thread;
 
 use esp_idf_hal::sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
 use esp_idf_svc::espnow::EspNow;
-use esp_idf_svc::sys::EspError;
 
 use esp_idf_svc::eventloop::*;
 use esp_idf_svc::hal::prelude::Peripherals;

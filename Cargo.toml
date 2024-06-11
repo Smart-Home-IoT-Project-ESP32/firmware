@@ -25,6 +25,7 @@ std = ["esp-idf-svc/binstart", "esp-idf-svc/std"]
 # Esp
 esp-idf-hal = { version = "0.43.1" }
 esp-idf-svc = { version = "0.48", default-features = false }
+esp-idf-sys = { version = "0.34.1", default-features = false }
 embedded-hal = { version = "1.0.0" }
 embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7" }
 embedded-svc = { version = "0.27.1" }
