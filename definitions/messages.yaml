@@ -1,0 +1,92 @@
+- name: "Fire Alarm"
+  description: "Fire Alarm sensor data, if true then fire alarm is triggered."
+  id:
+    raw-std: 0x01
+  fields:
+    - name: "Fire Alarm"
+      description: "Fire Alarm bool, if true then fire alarm is triggered."
+      content:
+        variable:
+          type: bool
+    - name: "Padding"
+      description: "Padding of 7 bits"
+      content:
+          padding:
+            bits: 7
+
+    - name: "Device ID"
+      description: "Device ID of the sender."
+      content:
+        variable:
+          type: u8
+
+- name: "Gas Leakage"
+  description: "Gas Leakage sensor data"
+  id:
+    raw-std: 0x02
+  fields:
+    - name: "Gas Leakage"
+      description: "Gas Leakage sensor data"
+      content:
+        variable:
+          type: u16
+
+    - name: "Device ID"
+      description: "Device ID of the sender."
+      content:
+        variable:
+          type: u8
+
+- name: "Temperature"
+  description: "Temperature of the environment."
+  id:
+    raw-std: 0x03
+  fields:
+    - name: "Temperature"
+      description: "Temperature of the environment."
+      multiplier: 100
+      unit: "°C"
+      content:
+        variable:
+          type: i16
+          
+    - name: "Device ID"
+      description: "Device ID of the sender."
+      content:
+        variable:
+          type: u8
+
+- name: "Humidity"
+  description: "The relative humidity."
+  id:
+    raw-std: 0x04
+  fields:
+    - name: "Humidity"
+      description: "The relative humidity."
+      unit: "%"
+      content:
+        variable:
+          type: u8
+          
+    - name: "Device ID"
+      description: "Device ID of the sender."
+      content:
+        variable:
+          type: u8
+
+- name: "SD card status"
+  description: "SD card status."
+  id:
+    raw-std: 0x05
+  fields:
+    - name: "SD card status"
+      description: "Status of the SD card (connected or disconnected)."
+      content:
+        variable:
+          type: bool
+    - name: "Padding"
+      description: "Padding of 7 bits"
+      content:
+          padding:
+            bits: 7
+
