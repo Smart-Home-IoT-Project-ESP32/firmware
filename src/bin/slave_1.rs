@@ -8,10 +8,9 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use embedded_svc::wifi::Configuration;
 use esp_idf_hal::delay;
-use esp_idf_hal::delay::FreeRtos;
 use esp_idf_hal::gpio;
 use esp_idf_hal::peripherals::Peripherals;
-use log::{error, info};
+use firmware::FireAlarmMessage;
 use firmware::{TemperatureMessage, HumidityMessage};
 use messages::Frame;
 
@@ -30,7 +29,7 @@ fn main() {
     dhtt_pin.set_high().unwrap();
 
     // flame sensor
-    let mut flame_pin = gpio::PinDriver::input(peripherals.pins.gpio4).unwrap();
+    let flame_pin = gpio::PinDriver::input(peripherals.pins.gpio4).unwrap();
 
     // ESP-NOW
 
@@ -41,7 +40,7 @@ fn main() {
     // Create a WifiDriver instance.
     let mut wifi_driver = WifiDriver::new(peripherals.modem, sys_loop, Some(nvs)).unwrap();
 
-    wifi_driver.set_configuration(&Configuration::Client(ClientConfiguration::default()));
+    wifi_driver.set_configuration(&Configuration::Client(ClientConfiguration::default())).unwrap();
 
     // To avoid this issue: https://github.com/espressif/esp-idf/issues/10341
     unsafe {
@@ -68,7 +67,7 @@ fn main() {
     let (sender, reciver) = std::sync::mpsc::sync_channel(10);
 
     // register reciving callback
-    esp_now.register_recv_cb(|mac_address, data| {
+    esp_now.register_recv_cb(|mac_address, _data| {
         let mac_address_array = mac_address.try_into().unwrap();
         if let Ok(false) = esp_now.peer_exists(mac_address_array) {
             // Add the peer
@@ -78,7 +77,9 @@ fn main() {
             };
             esp_now.add_peer(peer).unwrap();
         }
-    });
+    }).unwrap();
+
+    let sender_dhtt = sender.clone();
 
     std::thread::spawn(move || {
         loop {
@@ -86,18 +87,21 @@ fn main() {
                 // convert the reading to a message
                 let message_temp = TemperatureMessage::new().with_temperature(reading.temperature.try_into().unwrap());
                 let frame: Frame = message_temp.into();
-                sender.send(frame);
+                sender_dhtt.send(frame).unwrap();
                 let message_hum = HumidityMessage::new().with_humidity(reading.relative_humidity.try_into().unwrap());
                 let frame: Frame = message_hum.into();
-                sender.send(frame);       
+                sender_dhtt.send(frame).unwrap();       
             }
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_secs(5));
         }
     });
 
-    std::thread::spawn(|| {
+    std::thread::spawn(move || {
         loop {
-
+            let flame = flame_pin.is_high();
+            let message = FireAlarmMessage::new().with_fire_alarm(flame);
+            sender.send(message.into()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(5));
         }
     });
 
