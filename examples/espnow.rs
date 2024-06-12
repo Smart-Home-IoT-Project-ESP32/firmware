@@ -66,7 +66,6 @@ impl<'a, const BUFFER_SIZE: usize> Wifi<'a, BUFFER_SIZE> {
         // Set the desired configuration.
         driver.set_configuration(&station_config).unwrap();
 
-
         // To avoid this issue: https://github.com/espressif/esp-idf/issues/10341
         unsafe {
             esp_idf_hal::sys::esp_wifi_set_promiscuous(true);

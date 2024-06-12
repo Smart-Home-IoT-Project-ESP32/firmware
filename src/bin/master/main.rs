@@ -96,7 +96,8 @@ fn main() {
     let mut sd = SD::new(&mut spi_device).ok();
 
     // Initialize the WiFi
-    let mut esp_wifi = EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs.clone())).unwrap();
+    let mut esp_wifi =
+        EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs.clone())).unwrap();
     let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sys_loop.clone()).unwrap();
 
     wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()));
@@ -131,7 +132,9 @@ fn main() {
 
     // SmartConfig WiFi
     let smartconfig_config = esp_idf_sys::smartconfig_start_config_t::default();
-    unsafe { esp_idf_sys::esp_smartconfig_start(&smartconfig_config); }
+    unsafe {
+        esp_idf_sys::esp_smartconfig_start(&smartconfig_config);
+    }
 
     loop {
         thread::sleep(Duration::from_millis(100));
@@ -181,7 +184,7 @@ fn main() {
             if !IS_CONNECTED_TO_WIFI.load(core::sync::atomic::Ordering::Relaxed) {
                 // There is a conneciton, send data to the server from the SD card
                 let frames = sd.read();
-                
+
                 loop {
                     thread::sleep(Duration::from_secs(1));
                 }

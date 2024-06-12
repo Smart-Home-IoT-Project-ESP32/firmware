@@ -27,7 +27,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     unsafe {
         esp_idf_hal::sys::esp_base_mac_addr_set([0x06, 0xE8, 0xFB, 0x49, 0xB3, 0x78].as_ptr());
-    }   
+    }
 
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
@@ -46,8 +46,7 @@ fn main() -> Result<(), anyhow::Error> {
         channel: Some(13),
     }))?;
     */
-    
-    
+
     wifi.set_configuration(&Configuration::Mixed(
         ClientConfiguration {
             ssid: SSID.try_into().unwrap(),
@@ -67,7 +66,7 @@ fn main() -> Result<(), anyhow::Error> {
             ..Default::default()
         },
     ))?;
-    
+
     wifi.start()?;
     info!("Wifi started");
 
