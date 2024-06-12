@@ -27,12 +27,18 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
+    // Take the peripherals
     let peripherals = Peripherals::take().unwrap();
+
+    // ------------------------------ //
+    //       ADC configuration        //
+    // ------------------------------ //
 
     let adc_config = AdcConfig::new()
         .resolution(Resolution12Bit)
         .calibration(true);
 
+    // Create the ADC drivers for the two ADCs
     let mut adc_1: AdcDriver<ADC1> = AdcDriver::new(peripherals.adc1, &adc_config).unwrap();
     let mut adc_2: AdcDriver<ADC2> = AdcDriver::new(peripherals.adc2, &adc_config).unwrap();
 
@@ -44,7 +50,10 @@ fn main() {
     let mut gas_pin: AdcChannelDriver<'_, { attenuation::DB_11 }, Gpio11> =
         AdcChannelDriver::new(peripherals.pins.gpio11).unwrap();
 
-    // ESP-NOW
+
+    // ------------------------------ //
+    //            ESP-NOW             //
+    // ------------------------------ //
 
     // Setup the Wi-Fi driver
     let sys_loop = EspSystemEventLoop::take().unwrap();
@@ -79,8 +88,9 @@ fn main() {
     let esp_now = EspNow::take().unwrap();
 
     // Create a channel to communicate between threads
-
     let (sender, reciver) = std::sync::mpsc::sync_channel(10);
+
+    // Clone the sender to be used in two threads
     let sender_clone = sender.clone();
 
     // register reciving callback
@@ -96,10 +106,17 @@ fn main() {
         }
     });
 
-    std::thread::spawn(move || loop {
-        let lm35_raw_data = adc_1.read(&mut lm35_temp_pin).unwrap();
-        let lm35_preprocessed_data = convert_lm35_data(lm35_raw_data);
+    // ------------------------------ //
+    //            Threads             //
+    // ------------------------------ //
 
+    // Create a thread to read the lm35 sensor
+    std::thread::spawn(move || loop {
+        // Read the data from the lm35 sensor using ADC
+        let lm35_raw_data = adc_1.read(&mut lm35_temp_pin).unwrap();
+        // Convert the raw data to temperature
+        let lm35_preprocessed_data = convert_lm35_data(lm35_raw_data);
+        // Create a message with the temperature and send it to the main task
         let message_temp =
             TemperatureMessage::new().with_temperature(lm35_preprocessed_data.try_into().unwrap());
         let frame: Frame = message_temp.into();
@@ -108,16 +125,22 @@ fn main() {
         thread::sleep(Duration::from_secs(5));
     });
 
+    // Create a thread to read the gas sensor
     std::thread::spawn(move || loop {
+        // Read the data from the gas sensor using ADC
         let gas_data: u16 = adc_2.read(&mut gas_pin).unwrap();
+        // Create a message with the gas data and send it to the main task
         let gas_message = GasLeakageMessage::new().with_gas_leakage(gas_data.try_into().unwrap());
         let frame: Frame = gas_message.into();
         sender_clone.send(frame);
         thread::sleep(Duration::from_secs(5));
     });
 
+    // Main task
     loop {
+        // Wait for a message
         let frame_to_send = reciver.recv().unwrap();
+        // If a peer is available, send the message
         if let Ok(peer) = esp_now.fetch_peer(true) {
             esp_now
                 .send(peer.peer_addr, &frame_to_send.serialize())
@@ -126,6 +149,20 @@ fn main() {
     }
 }
 
+/// Convert the raw data from the LM35 sensor to temperature.
+/// 
+/// The `voltage` is calculated by: 
+/// * multyplying the raw data 3.1, which is the attenuation of the ADC in Volts
+/// * and dividing it by 4095, which is the number of bits of the ADC [2^12-1].
+/// 
+/// The `temperature` is calculated by multiplying the `voltage` by 100, 
+/// which is the temperature in Celsius.
+/// 
+/// 
+/// # Arguments
+/// 
+/// * `raw_data` - The raw data from the LM35 sensor.
+/// 
 pub fn convert_lm35_data(raw_data: u16) -> f32 {
     let voltage = raw_data as f32 * 3.1 / 4095.0;
     let temperature = voltage * 100.0;
