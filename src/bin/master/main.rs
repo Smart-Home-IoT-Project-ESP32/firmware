@@ -11,7 +11,7 @@ use esp_idf_hal::{
     prelude::*,
     spi::{config::DriverConfig, SpiConfig, SpiDeviceDriver},
 };
-use firmware::utilities::sd::SD;
+use firmware::utilities::{init::init, sd::SD};
 use std::io::{self, Write};
 use std::net::TcpStream;
 use std::thread;
@@ -31,10 +31,13 @@ const SSID: &str = env!("WIFI_SSID");
 /// Set with `export WIFI_PASS=value`.
 const PASSWORD: &str = env!("WIFI_PASS");
 
+/// TCP server address (telegraf)
+const TCP_SERVER_ADDR: &str = "192.168.137.1:8094";
+
 fn tcp_client() -> Result<(), io::Error> {
     info!("About to open a TCP connection");
 
-    let mut stream = TcpStream::connect("192.168.137.1:8094")?;
+    let mut stream = TcpStream::connect(TCP_SERVER_ADDR)?;
 
     let err = stream.try_clone();
     if let Err(err) = err {
@@ -60,13 +63,12 @@ fn tcp_client() -> Result<(), io::Error> {
     */
 }
 
-fn main() {
-    // It is necessary to call this function once. Otherwise some patches to the runtime
-    // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
-    esp_idf_svc::sys::link_patches();
+fn espnow_recv_cb(mac_address: &[u8], data: &[u8]) {
+    println!("mac: {:?}, data: {:?}", mac_address, data);
+}
 
-    // Bind the log crate to the ESP Logging facilities
-    esp_idf_svc::log::EspLogger::initialize_default();
+fn main() {
+    init();
 
     let sys_loop = EspSystemEventLoop::take().unwrap();
     let nvs = EspDefaultNvsPartition::take().unwrap();
@@ -130,14 +132,61 @@ fn main() {
     // wifi.connect().unwrap();
     // info!("Wifi connected");
 
+    unsafe extern "C" fn event_handler(
+        event_handler_arg: *mut std::ffi::c_void,
+        event_base: *const i8,
+        event_id: i32,
+        event_data: *mut std::ffi::c_void,
+    ) {
+        info!("SmartConfig scan done");
+        esp_idf_sys::esp_smartconfig_stop();
+    }
+
+    unsafe {
+        esp_idf_sys::esp_event_handler_register(
+            esp_idf_sys::SC_EVENT,
+            esp_idf_sys::ESP_EVENT_ANY_ID,
+            Some(event_handler),
+            std::ptr::null_mut(),
+        )
+    };
+
     // SmartConfig WiFi
     let smartconfig_config = esp_idf_sys::smartconfig_start_config_t::default();
     unsafe {
         esp_idf_sys::esp_smartconfig_start(&smartconfig_config);
     }
 
+    let mut now = std::time::Instant::now();
     loop {
         thread::sleep(Duration::from_millis(100));
+        if now.elapsed().as_secs() > 1 {
+            info!(
+                "event scan done: {:?}",
+                esp_idf_sys::smartconfig_event_t_SC_EVENT_SCAN_DONE
+            );
+            info!(
+                "event found channel: {:?}",
+                esp_idf_sys::smartconfig_event_t_SC_EVENT_FOUND_CHANNEL
+            );
+            info!(
+                "event got ssid pswd: {:?}",
+                esp_idf_sys::smartconfig_event_t_SC_EVENT_GOT_SSID_PSWD
+            );
+            info!(
+                "event ack: {:?}",
+                esp_idf_sys::smartconfig_event_t_SC_EVENT_SEND_ACK_DONE
+            );
+            unsafe {
+                info!("sc_event: {:?}", esp_idf_sys::SC_EVENT);
+            }
+            now = std::time::Instant::now();
+        }
+        // if esp_idf_sys::smartconfig_event_t_SC_EVENT_SCAN_DONE {
+        //     info!("SmartConfig scan done");
+        //     esp_idf_sys::esp_smartconfig_stop();
+        //     break;
+        // }
     }
 
     // wifi.wait_netif_up()?;
@@ -168,11 +217,7 @@ fn main() {
     };
     espnow.add_peer(peer).unwrap();
 
-    espnow
-        .register_recv_cb(|mac_address, data| {
-            println!("mac: {:?}, data: {:?}", mac_address, data);
-        })
-        .unwrap();
+    espnow.register_recv_cb(espnow_recv_cb).unwrap();
 
     thread::sleep(Duration::from_secs(1));
 
@@ -181,8 +226,8 @@ fn main() {
         sleep(Duration::from_millis(10));
 
         if let Some(mut sd) = sd {
-            if !IS_CONNECTED_TO_WIFI.load(core::sync::atomic::Ordering::Relaxed) {
-                // There is a conneciton, send data to the server from the SD card
+            if IS_CONNECTED_TO_WIFI.load(core::sync::atomic::Ordering::Relaxed) {
+                // There is a connection, send data to the server from the SD card
                 let frames = sd.read();
 
                 loop {
