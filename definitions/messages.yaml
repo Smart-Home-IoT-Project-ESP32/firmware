@@ -16,6 +16,7 @@
 
     - name: "Device ID"
       description: "Device ID of the sender."
+      tag: true
       content:
         variable:
           type: u8
@@ -33,6 +34,7 @@
 
     - name: "Device ID"
       description: "Device ID of the sender."
+      tag: true
       content:
         variable:
           type: u8
@@ -52,6 +54,7 @@
           
     - name: "Device ID"
       description: "Device ID of the sender."
+      tag: true
       content:
         variable:
           type: u8
@@ -70,6 +73,7 @@
           
     - name: "Device ID"
       description: "Device ID of the sender."
+      tag: true
       content:
         variable:
           type: u8

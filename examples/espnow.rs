@@ -13,7 +13,7 @@ use esp_idf_svc::wifi::{ClientConfiguration, Configuration};
 use std::collections::VecDeque;
 use std::time::Instant;
 
-const WIFI_CHANNEL: u8 = 1;
+const WIFI_CHANNEL: u8 = 6;
 const ESP_NOW_MAX_DATA_LEN: usize = esp_idf_hal::sys::ESP_NOW_MAX_DATA_LEN as usize;
 
 /// Types of Wi-Fi protocols.
@@ -66,15 +66,6 @@ impl<'a, const BUFFER_SIZE: usize> Wifi<'a, BUFFER_SIZE> {
         // Set the desired configuration.
         driver.set_configuration(&station_config).unwrap();
 
-        // To avoid this issue: https://github.com/espressif/esp-idf/issues/10341
-        unsafe {
-            esp_idf_hal::sys::esp_wifi_set_promiscuous(true);
-            let channel = WIFI_CHANNEL;
-            let second = esp_idf_hal::sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
-            esp_idf_hal::sys::esp_wifi_set_channel(channel, second);
-            esp_idf_hal::sys::esp_wifi_set_promiscuous(false);
-        }
-
         println!("config: {:?}", driver.get_configuration().unwrap());
 
         // Set the protocol.
@@ -89,6 +80,12 @@ impl<'a, const BUFFER_SIZE: usize> Wifi<'a, BUFFER_SIZE> {
 
         // Wi-Fi start
         driver.start().unwrap();
+
+        unsafe {
+            let channel = WIFI_CHANNEL;
+            let second = esp_idf_hal::sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
+            esp_idf_hal::sys::esp_wifi_set_channel(channel, second);
+        }
 
         println!(
             "config after start: {:?}",

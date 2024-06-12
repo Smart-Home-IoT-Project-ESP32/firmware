@@ -5,9 +5,9 @@ use esp_idf_svc::sntp;
 use esp_idf_svc::sys::EspError;
 
 /// Set with `export WIFI_SSID=value`.
-const SSID: &str = env!("WIFI_SSID");
+const SSID: Option<&str> = option_env!("WIFI_SSID");
 /// Set with `export WIFI_PASS=value`.
-const PASSWORD: &str = env!("WIFI_PASS");
+const PASSWORD: Option<&str> = option_env!("WIFI_PASS");
 
 use log::info;
 
@@ -45,8 +45,8 @@ fn wifi_create() -> Result<esp_idf_svc::wifi::EspWifi<'static>, EspError> {
     let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sys_loop.clone())?;
 
     wifi.set_configuration(&Configuration::Client(ClientConfiguration {
-        ssid: SSID.try_into().unwrap(),
-        password: PASSWORD.try_into().unwrap(),
+        ssid: SSID.expect("Set a SSID").try_into().unwrap(),
+        password: PASSWORD.expect("Set a Password").try_into().unwrap(),
         ..Default::default()
     }))?;
 

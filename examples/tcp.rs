@@ -15,9 +15,9 @@ use esp_idf_svc::nvs::*;
 use esp_idf_svc::wifi::*;
 
 /// Set with `export WIFI_SSID=value`.
-const SSID: &str = env!("WIFI_SSID");
+const SSID: Option<&str> = option_env!("WIFI_SSID");
 /// Set with `export WIFI_PASS=value`.
-const PASSWORD: &str = env!("WIFI_PASS");
+const PASSWORD: Option<&str> = option_env!("WIFI_PASS");
 
 use log::info;
 
@@ -49,10 +49,10 @@ fn main() -> Result<(), anyhow::Error> {
 
     wifi.set_configuration(&Configuration::Mixed(
         ClientConfiguration {
-            ssid: SSID.try_into().unwrap(),
+            ssid: SSID.expect("Set a SSID").try_into().unwrap(),
             bssid: None,
             auth_method: AuthMethod::WPA2Personal,
-            password: PASSWORD.try_into().unwrap(),
+            password: PASSWORD.expect("Set a Password").try_into().unwrap(),
             channel: None,
         },
         AccessPointConfiguration {
@@ -73,7 +73,7 @@ fn main() -> Result<(), anyhow::Error> {
     wifi.connect()?;
     info!("Wifi connected");
 
-    // wifi.wait_netif_up()?;
+    wifi.wait_netif_up()?;
     info!("Wifi netif up");
 
     // To avoid this issue: https://github.com/espressif/esp-idf/issues/10341
@@ -106,8 +106,6 @@ fn main() -> Result<(), anyhow::Error> {
             println!("mac: {:?}, data: {:?}", mac_address, data);
         })
         .unwrap();
-
-    thread::sleep(Duration::from_secs(1));
 
     tcp_client()?;
 

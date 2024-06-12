@@ -14,9 +14,9 @@ use esp_idf_svc::{eventloop::EspSystemEventLoop, nvs::EspDefaultNvsPartition};
 use log::info;
 
 /// Set with `export WIFI_SSID=value`.
-const SSID: &str = env!("WIFI_SSID");
+const SSID: Option<&str> = option_env!("WIFI_SSID");
 /// Set with `export WIFI_PASS=value`.
-const PASSWORD: &str = env!("WIFI_PASS");
+const PASSWORD: Option<&str> = option_env!("WIFI_PASS");
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -46,10 +46,10 @@ fn main() -> anyhow::Result<()> {
 
 fn connect_wifi(wifi: &mut BlockingWifi<EspWifi<'static>>) -> anyhow::Result<()> {
     let wifi_configuration: Configuration = Configuration::Client(ClientConfiguration {
-        ssid: SSID.try_into().unwrap(),
+        ssid: SSID.expect("Set an SSID").try_into().unwrap(),
         bssid: None,
         auth_method: AuthMethod::WPA2Personal,
-        password: PASSWORD.try_into().unwrap(),
+        password: PASSWORD.expect("Set a Password").try_into().unwrap(),
         channel: None,
     });
 

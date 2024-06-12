@@ -17,14 +17,11 @@ opt-level = "s"
 debug = true    # Symbols are nice and they don't increase the size on Flash
 opt-level = "z"
 
-[features]
-default = ["std", "esp-idf-svc/native"]
-std = ["esp-idf-svc/binstart", "esp-idf-svc/std"]
 
 [dependencies]
 # Esp
 esp-idf-hal = { version = "0.43.1" }
-esp-idf-svc = { version = "0.48", default-features = false }
+esp-idf-svc = { version = "0.48" }
 esp-idf-sys = { version = "0.34.1", default-features = false }
 embedded-hal = { version = "1.0.0" }
 embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7" }

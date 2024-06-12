@@ -27,9 +27,9 @@ use log::info;
 static IS_CONNECTED_TO_WIFI: AtomicBool = AtomicBool::new(false);
 
 /// Set with `export WIFI_SSID=value`.
-const SSID: &str = env!("WIFI_SSID");
+const SSID: Option<&str> = option_env!("WIFI_SSID");
 /// Set with `export WIFI_PASS=value`.
-const PASSWORD: &str = env!("WIFI_PASS");
+const PASSWORD: Option<&str> = option_env!("WIFI_PASS");
 
 /// TCP server address (telegraf)
 const TCP_SERVER_ADDR: &str = "192.168.137.1:8094";
