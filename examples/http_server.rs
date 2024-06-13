@@ -33,14 +33,15 @@ const STACK_SIZE: usize = 10240;
 struct FormData<'a> {
     wifi_ssid: &'a str,
     wifi_pass: &'a str,
+    ip_addr: &'a str,
 }
 
 impl<'a> std::fmt::Display for FormData<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Wi-Fi SSID: {}, Password: {}",
-            self.wifi_ssid, self.wifi_pass
+            "Wi-Fi SSID: {}, Password: {}, Ip Address: {}",
+            self.wifi_ssid, self.wifi_pass, self.ip_addr
         )
     }
 }
@@ -73,8 +74,8 @@ fn main() -> anyhow::Result<()> {
 
         if let Ok(form) = serde_json::from_slice::<FormData>(&buf) {
             info!(
-                "Wi-Fi SSID: {}, Password: {}\n",
-                form.wifi_ssid, form.wifi_pass
+                "Wi-Fi SSID: {}, Password: {}, Ip Address: {}",
+                form.wifi_ssid, form.wifi_pass, form.ip_addr
             );
 
             let ssid: heapless::String<32> = form.wifi_ssid.try_into().unwrap();
@@ -93,7 +94,7 @@ fn main() -> anyhow::Result<()> {
 
         let _ = wifi.disconnect();
 
-        let config = wifi.get_configuration()?;
+        // let config = wifi.get_configuration()?;
         let new_config = wifi::Configuration::Mixed(
             ClientConfiguration {
                 ssid: ssid.try_into().unwrap(),
