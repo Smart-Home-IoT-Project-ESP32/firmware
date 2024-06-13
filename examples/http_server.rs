@@ -14,7 +14,7 @@ use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     http::server::EspHttpServer,
     nvs::EspDefaultNvsPartition,
-    wifi::{BlockingWifi, EspWifi},
+    wifi::{AuthMethod, BlockingWifi, EspWifi},
 };
 use esp_idf_svc::{hal::prelude::Peripherals, wifi::ClientConfiguration};
 
@@ -94,15 +94,21 @@ fn main() -> anyhow::Result<()> {
         let _ = wifi.disconnect();
 
         let config = wifi.get_configuration()?;
-        let new_config = if let wifi::Configuration::Mixed(mut client, ap) = config {
-            client.ssid = ssid;
-            client.password = pwd;
-
-            wifi::Configuration::Mixed(client, ap)
-        } else {
-            config
-        };
-
+        let new_config = wifi::Configuration::Mixed(
+            ClientConfiguration {
+                ssid: ssid.try_into().unwrap(),
+                bssid: None,
+                auth_method: AuthMethod::WPA2Personal,
+                password: pwd.try_into().unwrap(),
+                channel: None,
+            },
+            AccessPointConfiguration {
+                ssid: "ESP32-Access-Point".try_into().unwrap(),
+                ssid_hidden: false,
+                channel: 0,
+                ..Default::default()
+            },
+        );
         wifi.set_configuration(&new_config)?;
 
         wifi.connect().unwrap();
@@ -122,17 +128,12 @@ fn create_server() -> anyhow::Result<(EspHttpServer<'static>, BlockingWifi<EspWi
         sys_loop,
     )?;
 
-    let wifi_configuration = wifi::Configuration::Mixed(
-        ClientConfiguration {
-            ..Default::default()
-        },
-        AccessPointConfiguration {
-            ssid: "ESP32-Access-Point".try_into().unwrap(),
-            ssid_hidden: false,
-            channel: 0,
-            ..Default::default()
-        },
-    );
+    let wifi_configuration = wifi::Configuration::AccessPoint(AccessPointConfiguration {
+        ssid: "ESP32-Access-Point".try_into().unwrap(),
+        ssid_hidden: false,
+        channel: 0,
+        ..Default::default()
+    });
 
     wifi.set_configuration(&wifi_configuration)?;
     wifi.start()?;

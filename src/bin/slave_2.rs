@@ -98,17 +98,19 @@ fn main() {
     let channel_search_notifier = channel_search.notifier();
 
     // register reciving callback, this is used to add master board to the peer list
-    esp_now.register_recv_cb(|mac_address, _data| {
-        let mac_address_array = mac_address.try_into().unwrap();
-        if let Ok(false) = esp_now.peer_exists(mac_address_array) {
-            // Add the peer
-            let peer = PeerInfo {
-                peer_addr: mac_address_array,
-                ..Default::default()
-            };
-            esp_now.add_peer(peer).unwrap();
-        }
-    }).unwrap();
+    esp_now
+        .register_recv_cb(|mac_address, _data| {
+            let mac_address_array = mac_address.try_into().unwrap();
+            if let Ok(false) = esp_now.peer_exists(mac_address_array) {
+                // Add the peer
+                let peer = PeerInfo {
+                    peer_addr: mac_address_array,
+                    ..Default::default()
+                };
+                esp_now.add_peer(peer).unwrap();
+            }
+        })
+        .unwrap();
 
     // Register the send callback, this is used to detect if the master is not reachable
     let mut num_fail: usize = 0;
@@ -157,7 +159,7 @@ fn main() {
         // Read the data from the gas sensor using ADC
         let gas_data: u16 = adc_2.read(&mut gas_pin).unwrap();
         // Create a message with the gas data and send it to the main task
-        let gas_message = GasLeakageMessage::new().with_gas_leakage(gas_data.try_into().unwrap());
+        let gas_message = GasLeakageMessage::new().with_gas_leakage(gas_data);
         let frame: Frame = gas_message.into();
         sender.send(frame).unwrap();
         thread::sleep(Duration::from_secs(5));
@@ -207,6 +209,5 @@ fn main() {
 ///
 pub fn convert_lm35_data(raw_data: u16) -> f32 {
     let voltage = raw_data as f32 * 3.1 / 4095.0;
-    let temperature = voltage * 100.0;
-    temperature
+    voltage * 100.0
 }

@@ -124,8 +124,7 @@ fn main() {
                 let frame: Frame = message_temp.into();
                 // send it to the main task
                 sender_dhtt.send(frame).unwrap();
-                let message_hum = HumidityMessage::new()
-                    .with_humidity(reading.relative_humidity);
+                let message_hum = HumidityMessage::new().with_humidity(reading.relative_humidity);
                 let frame: Frame = message_hum.into();
                 sender_dhtt.send(frame).unwrap();
             }

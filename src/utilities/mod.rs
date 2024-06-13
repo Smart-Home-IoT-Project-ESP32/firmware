@@ -1,3 +1,3 @@
+pub mod channel;
 pub mod init;
 pub mod sd;
-pub mod channel;
