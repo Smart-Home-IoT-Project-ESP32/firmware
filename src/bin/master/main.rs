@@ -1,13 +1,9 @@
-// Delete this when a stable version of bms is reached.
-#![allow(warnings, unused)]
-
 use core::{sync::atomic::AtomicBool, time::Duration};
 use std::thread::sleep;
 
 use embedded_sdmmc::SdMmcSpi;
 use embedded_svc::{
-    http::{Headers, Method},
-    io::{Read, Write},
+    http::Method,
     wifi::{self, AccessPointConfiguration},
 };
 use esp_idf_hal::{
@@ -30,29 +26,10 @@ use log::info;
 
 static IS_CONNECTED_TO_WIFI: AtomicBool = AtomicBool::new(false);
 
-use serde::Deserialize;
+mod utilities;
 
-static INDEX_HTML: &str = include_str!("server_page.html");
-
-// Max payload length
-const MAX_LEN: usize = 128;
 // Need lots of stack to parse JSON
 const STACK_SIZE: usize = 10240;
-
-#[derive(Deserialize)]
-struct FormData<'a> {
-    wifi_ssid: &'a str,
-    wifi_pass: &'a str,
-    ip_addr: &'a str,
-}
-
-/// Set with `export WIFI_SSID=value`.
-// const SSID: Option<&str> = option_env!("WIFI_SSID");
-/// Set with `export WIFI_PASS=value`.
-// const PASSWORD: Option<&str> = option_env!("WIFI_PASS");
-
-/// TCP server address (telegraf)
-// const TCP_SERVER_ADDR: &str = "192.168.137.1:8094";
 
 fn tcp_client(ip: &str) -> Result<(), std::io::Error> {
     info!("About to open a TCP connection");
@@ -69,7 +46,10 @@ fn tcp_client(ip: &str) -> Result<(), std::io::Error> {
 
     let mut i = 0;
     loop {
-        std::io::Write::write_all(&mut stream, format!("weather temperature={}\n", i).as_bytes())?;
+        std::io::Write::write_all(
+            &mut stream,
+            format!("weather temperature={}\n", i).as_bytes(),
+        )?;
         i += 1;
         thread::sleep(Duration::from_millis(500))
     }
@@ -88,19 +68,22 @@ fn espnow_recv_cb(mac_address: &[u8], data: &[u8]) {
 }
 
 fn main() {
+    // Patches, logger and watchdog reconfiguration
     init();
+
     // Taking peripherals
     let peripherals = Peripherals::take().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
     let nvs = EspDefaultNvsPartition::take().unwrap();
 
-
-    // Creating the AP
+    // WiFi configuration
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs)).unwrap(),
         sys_loop,
-    ).unwrap();
+    )
+    .unwrap();
 
+    // Access Point configuration
     let wifi_configuration = wifi::Configuration::AccessPoint(AccessPointConfiguration {
         ssid: "ESP32-Access-Point".try_into().unwrap(),
         ssid_hidden: false,
@@ -114,7 +97,8 @@ fn main() {
 
     info!("Created AP");
 
-    let mut server_configuration = esp_idf_svc::http::server::Configuration {
+    // HTTP server configuration
+    let server_configuration = esp_idf_svc::http::server::Configuration {
         stack_size: STACK_SIZE,
         ..Default::default()
     };
@@ -124,6 +108,18 @@ fn main() {
     let (sender, reciver) = std::sync::mpsc::sync_channel(10);
 
     info!("Server created");
+
+    // HTTP server get requests handler
+    server
+        .fn_handler("/", Method::Get, utilities::server::get_request_handler)
+        .unwrap();
+
+    // HTTP server post requests handler
+    server
+        .fn_handler::<anyhow::Error, _>("/post", Method::Post, move |req| {
+            utilities::server::post_request_handler(req, &sender)
+        })
+        .unwrap();
 
     // Initialize SD card
     let spi_config = SpiConfig::new();
@@ -145,44 +141,6 @@ fn main() {
     let mut spi_device = SdMmcSpi::new(spi, sdmmc_cs);
 
     let mut sd = SD::new(&mut spi_device).ok();
-
-
-    server.fn_handler("/", Method::Get, |req| {
-        req.into_ok_response()?
-            .write_all(INDEX_HTML.as_bytes())
-            .map(|_| ())
-    }).unwrap();
-
-    server.fn_handler::<anyhow::Error, _>("/post", Method::Post, move |mut req| {
-        let len = req.content_len().unwrap_or(0) as usize;
-
-        if len > MAX_LEN {
-            req.into_status_response(413)?
-                .write_all("Request too big".as_bytes())?;
-            return Ok(());
-        }
-
-        let mut buf = vec![0; len];
-        req.read_exact(&mut buf)?;
-        let mut resp = req.into_ok_response()?;
-
-        if let Ok(form) = serde_json::from_slice::<FormData>(&buf) {
-            info!(
-                "Wi-Fi SSID: {}, Password: {}, Ip Address: {}",
-                form.wifi_ssid, form.wifi_pass, form.ip_addr
-            );
-
-            let ssid: heapless::String<32> = form.wifi_ssid.try_into().unwrap();
-            let pwd: heapless::String<64> = form.wifi_pass.try_into().unwrap();
-            let ip: heapless::String<63> = form.ip_addr.try_into().unwrap();
-
-            sender.send((ssid, pwd, ip)).unwrap();
-        } else {
-            resp.write_all("JSON error".as_bytes())?;
-        }
-
-        Ok(())
-    }).unwrap();
 
     // Initialize the WiFi
     // let mut esp_wifi =
@@ -246,36 +204,6 @@ fn main() {
 
     // let mut now = std::time::Instant::now();
     loop {
-        //    thread::sleep(Duration::from_millis(100));
-        //    if now.elapsed().as_secs() > 1 {
-        //        info!(
-        //            "event scan done: {:?}",
-        //            esp_idf_sys::smartconfig_event_t_SC_EVENT_SCAN_DONE
-        //        );
-        //        info!(
-        //            "event found channel: {:?}",
-        //            esp_idf_sys::smartconfig_event_t_SC_EVENT_FOUND_CHANNEL
-        //        );
-        //        info!(
-        //            "event got ssid pswd: {:?}",
-        //            esp_idf_sys::smartconfig_event_t_SC_EVENT_GOT_SSID_PSWD
-        //        );
-        //        info!(
-        //            "event ack: {:?}",
-        //            esp_idf_sys::smartconfig_event_t_SC_EVENT_SEND_ACK_DONE
-        //        );
-        //        unsafe {
-        //            info!("sc_event: {:?}", esp_idf_sys::SC_EVENT);
-        //        }
-        //        now = std::time::Instant::now();
-        //    }
-        // if esp_idf_sys::smartconfig_event_t_SC_EVENT_SCAN_DONE {
-        //     info!("SmartConfig scan done");
-        //     esp_idf_sys::esp_smartconfig_stop();
-        //     break;
-        // }
-        // }
-
         // wifi.wait_netif_up()?;
         // info!("Wifi netif up");
 
@@ -343,21 +271,24 @@ fn main() {
             // Sleep for a FreeRTOS tick, this allow the scheduler to run another task
             sleep(Duration::from_millis(10));
 
-            if let Some(mut sd) = sd {
+            if let Some(mut sd_inner) = sd {
                 if IS_CONNECTED_TO_WIFI.load(core::sync::atomic::Ordering::Relaxed) {
                     // There is a connection, send data to the server from the SD card
-                    let frames = sd.read();
+                    let _frames = sd_inner.read();
 
-                    loop {
-                        thread::sleep(Duration::from_secs(1));
-                    }
+                    // TODO: logic
                     info!("TCP connection starting...");
                     tcp_client(&ip).unwrap();
                 } else {
                     // There is no connection, store data in the SD card
                     let frame = todo!("get data");
-                    sd.write(frame);
+                    // TODO: what to do if sd is not working?
+                    sd_inner.write(frame).unwrap();
                 }
+
+                // TODO: is there a way to make it work without reinitializing the SD card
+                // option every time?
+                sd = Some(sd_inner);
             } else {
                 // panic!("Arrivati");
                 // Try to recover the SD card
