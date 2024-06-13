@@ -24,7 +24,7 @@ fn main() {
             ),
             Err(e) => error!("Failed to retrieve information: {:?}", e),
         }
-        i = i + 1;
+        i += 1;
         FreeRtos::delay_ms(3000);
     }
 }

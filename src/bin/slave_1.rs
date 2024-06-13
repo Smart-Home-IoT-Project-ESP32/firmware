@@ -151,7 +151,7 @@ fn main() {
                 set_channel(channel);
                 // channels 1, 6 and 11 are the most common channels
                 channel = (channel + 5) % 15;
-                std::thread::sleep(Duration::from_secs(2));
+                std::thread::sleep(Duration::from_secs(5));
             }
             // channel found, wait untill a notification is received
             wait_notification(BLOCK);

@@ -287,10 +287,10 @@ fn main() {
 
         let new_config = wifi::Configuration::Mixed(
             ClientConfiguration {
-                ssid: ssid.try_into().unwrap(),
+                ssid,
                 bssid: None,
                 auth_method: AuthMethod::WPA2Personal,
-                password: pwd.try_into().unwrap(),
+                password: pwd,
                 channel: None,
             },
             AccessPointConfiguration {

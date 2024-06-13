@@ -100,7 +100,9 @@ fn main() {
     // register reciving callback, this is used to add master board to the peer list
     esp_now
         .register_recv_cb(|mac_address, _data| {
+            // Convert slice to array
             let mac_address_array = mac_address.try_into().unwrap();
+            // If peer does not exist, add it
             if let Ok(false) = esp_now.peer_exists(mac_address_array) {
                 // Add the peer
                 let peer = PeerInfo {
@@ -173,7 +175,7 @@ fn main() {
                 set_channel(channel);
                 // channels 1, 6 and 11 are the most common channels
                 channel = (channel + 5) % 15;
-                std::thread::sleep(Duration::from_secs(2));
+                std::thread::sleep(Duration::from_secs(5));
             }
             // channel found, wait untill a notification is received
             wait_notification(BLOCK);

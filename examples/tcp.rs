@@ -37,16 +37,6 @@ fn main() -> Result<(), anyhow::Error> {
     let mut esp_wifi = EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs.clone()))?;
     let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sys_loop.clone())?;
 
-    /*
-    wifi.set_configuration(&Configuration::Client(ClientConfiguration {
-        ssid: SSID.try_into().unwrap(),
-        bssid: None,
-        auth_method: AuthMethod::WPA2Personal,
-        password: PASSWORD.try_into().unwrap(),
-        channel: Some(13),
-    }))?;
-    */
-
     wifi.set_configuration(&Configuration::Mixed(
         ClientConfiguration {
             ssid: SSID.expect("Set a SSID").try_into().unwrap(),
@@ -93,7 +83,7 @@ fn main() -> Result<(), anyhow::Error> {
     let espnow = EspNow::take().unwrap();
 
     let peer = esp_idf_hal::sys::esp_now_peer_info {
-        channel: channel,
+        channel,
         ifidx: esp_idf_hal::sys::wifi_interface_t_WIFI_IF_AP,
         encrypt: false,
         peer_addr: [0x5E, 0xD9, 0x94, 0x27, 0x97, 0x15],
