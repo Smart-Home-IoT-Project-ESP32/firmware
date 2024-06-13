@@ -37,15 +37,20 @@ struct FormData<'a> {
 
 impl<'a> std::fmt::Display for FormData<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Wi-Fi SSID: {}, Password: {}", self.wifi_ssid, self.wifi_pass)
+        write!(
+            f,
+            "Wi-Fi SSID: {}, Password: {}",
+            self.wifi_ssid, self.wifi_pass
+        )
     }
 }
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    let mut server = create_server()?;
 
+    let (sender, reciver) = std::sync::mpsc::sync_channel(10);
+    let (mut server, mut wifi) = create_server()?;
 
     server.fn_handler("/", Method::Get, |req| {
         req.into_ok_response()?
@@ -53,8 +58,7 @@ fn main() -> anyhow::Result<()> {
             .map(|_| ())
     })?;
 
-
-    server.fn_handler::<anyhow::Error, _>("/post", Method::Post, |mut req| {
+    server.fn_handler::<anyhow::Error, _>("/post", Method::Post, move |mut req| {
         let len = req.content_len().unwrap_or(0) as usize;
 
         if len > MAX_LEN {
@@ -63,45 +67,20 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
 
-
         let mut buf = vec![0; len];
         req.read_exact(&mut buf)?;
         let mut resp = req.into_ok_response()?;
 
-
         if let Ok(form) = serde_json::from_slice::<FormData>(&buf) {
-
             info!(
                 "Wi-Fi SSID: {}, Password: {}\n",
-                form.wifi_ssid,
-                form.wifi_pass
+                form.wifi_ssid, form.wifi_pass
             );
 
-            let peripherals = Peripherals::take()?;
-            let sys_loop = EspSystemEventLoop::take()?;
-            let nvs = EspDefaultNvsPartition::take()?;
-            
-            let mut wifi = BlockingWifi::wrap(
-                EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
-                sys_loop,
-            )?;
+            let ssid: heapless::String<32> = form.wifi_ssid.try_into().unwrap();
+            let pwd: heapless::String<64> = form.wifi_pass.try_into().unwrap();
 
-            let client_configuration = wifi::Configuration::Client(ClientConfiguration {
-                ssid: form.wifi_ssid.try_into().unwrap(),
-                password: form.wifi_pass.try_into().unwrap(),
-                ..Default::default()
-            });
-        
-        
-            wifi.set_configuration(&client_configuration)?;
-        
-        
-            wifi.start().unwrap();
-            wifi.connect().unwrap();
-            info!("Connected to Wi-Fi");
-        
-            wifi.wait_netif_up().unwrap();        
-            
+            sender.send((ssid, pwd)).unwrap();
         } else {
             resp.write_all("JSON error".as_bytes())?;
         }
@@ -109,18 +88,31 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     })?;
 
-    // Keep server running beyond when main() returns (forever)
-    // Do not call this if you ever want to stop or access it later.
-    // Otherwise you can either add an infinite loop so the main task
-    // never returns, or you can move it to another thread.
-    // https://doc.rust-lang.org/stable/core/mem/fn.forget.html
-    core::mem::forget(server);
+    loop {
+        let (ssid, pwd) = reciver.recv().unwrap();
 
-    // Main task no longer needed, free up some memory
-    Ok(())
+        let _ = wifi.disconnect();
+
+        let config = wifi.get_configuration()?;
+        let new_config = if let wifi::Configuration::Mixed(mut client, ap) = config {
+            client.ssid = ssid;
+            client.password = pwd;
+
+            wifi::Configuration::Mixed(client, ap)
+        } else {
+            config
+        };
+
+        wifi.set_configuration(&new_config)?;
+
+        wifi.connect().unwrap();
+        info!("Connected to Wi-Fi");
+
+        wifi.wait_netif_up().unwrap();
+    }
 }
 
-fn create_server() -> anyhow::Result<EspHttpServer<'static>> {
+fn create_server() -> anyhow::Result<(EspHttpServer<'static>, BlockingWifi<EspWifi<'static>>)> {
     let peripherals = Peripherals::take()?;
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
@@ -130,12 +122,18 @@ fn create_server() -> anyhow::Result<EspHttpServer<'static>> {
         sys_loop,
     )?;
 
-    let wifi_configuration = wifi::Configuration::AccessPoint(AccessPointConfiguration {
-        ssid: "ESP32-Access-Point".try_into().unwrap(),
-        ssid_hidden: false,
-        channel: 0,
-        ..Default::default()
-    });
+    let wifi_configuration = wifi::Configuration::Mixed(
+        ClientConfiguration {
+            ..Default::default()
+        },
+        AccessPointConfiguration {
+            ssid: "ESP32-Access-Point".try_into().unwrap(),
+            ssid_hidden: false,
+            channel: 0,
+            ..Default::default()
+        },
+    );
+
     wifi.set_configuration(&wifi_configuration)?;
     wifi.start()?;
     wifi.wait_netif_up()?;
@@ -147,12 +145,5 @@ fn create_server() -> anyhow::Result<EspHttpServer<'static>> {
         ..Default::default()
     };
 
-    // Keep wifi running beyond when this function returns (forever)
-    // Do not call this if you ever want to stop or access it later.
-    // Otherwise it should be returned from this function and kept somewhere
-    // so it does not go out of scope.
-    // https://doc.rust-lang.org/stable/core/mem/fn.forget.html
-    core::mem::forget(wifi);
-
-    Ok(EspHttpServer::new(&server_configuration)?)
+    Ok((EspHttpServer::new(&server_configuration)?, wifi))
 }
