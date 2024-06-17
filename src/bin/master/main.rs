@@ -1,5 +1,12 @@
 use core::{sync::atomic::AtomicBool, time::Duration};
-use std::{sync::mpsc::SyncSender, thread::sleep};
+use std::{
+    net::TcpStream,
+    sync::{
+        mpsc::{self, SyncSender},
+        Arc, Mutex,
+    },
+    thread::sleep,
+};
 
 use embedded_sdmmc::SdMmcSpi;
 use embedded_svc::{
@@ -12,19 +19,22 @@ use esp_idf_hal::{
     prelude::*,
     spi::{config::DriverConfig, SpiConfig, SpiDeviceDriver},
 };
-use firmware::utilities::{init::init, sd::SD};
+use firmware::{
+    utilities::{init::init, sd::SD},
+    Message,
+};
 use messages::Frame;
 use std::thread;
-use utilities::tcp_client::tcp_client;
+use utilities::http_server::request_handler_thread;
 
 use esp_idf_hal::sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
-use esp_idf_svc::{espnow::EspNow, http::server::EspHttpServer, wifi::ClientConfiguration};
+use esp_idf_svc::{espnow::EspNow, http::server::EspHttpServer};
 
 use esp_idf_svc::eventloop::*;
 use esp_idf_svc::nvs::*;
 use esp_idf_svc::wifi::*;
 use esp_idf_sys::ESP_NOW_MAX_DATA_LEN;
-use log::info;
+use log::{info, warn};
 
 static IS_CONNECTED_TO_WIFI: AtomicBool = AtomicBool::new(false);
 
@@ -35,6 +45,8 @@ const MAX_DATA_LEN: usize = ESP_NOW_MAX_DATA_LEN as usize;
 const STACK_SIZE: usize = 10240;
 /// AP SSID
 const SSID: &str = "Smart Home Hub";
+/// Default TCP server address (telegraf)
+const TCP_SERVER_ADDR: &str = "192.168.137.1:8094";
 
 fn espnow_recv_cb(
     _mac_address: &[u8],
@@ -56,7 +68,7 @@ fn main() {
 
     // NVS
     let nvs_default_partition = EspDefaultNvsPartition::take().unwrap();
-    let namespace = "TCP connection";
+    let namespace = "Connect configs";
     let mut nvs = match EspNvs::new(nvs_default_partition.clone(), namespace, true) {
         Ok(nvs) => {
             info!("Got namespace {:?} from default partition", namespace);
@@ -65,7 +77,10 @@ fn main() {
         Err(e) => panic!("Could't get namespace {:?}", e),
     };
 
-    // WiFi configuration
+    // ----------- //
+    // WIFI config //
+    // ----------- //
+    // Initialize WiFi
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(
             peripherals.modem,
@@ -78,33 +93,39 @@ fn main() {
     .unwrap();
 
     // Check for previous WiFi configuration
-    if wifi.get_configuration().unwrap() == Configuration::None {
+    let config = if wifi.get_configuration().unwrap() == Configuration::None {
         info!("No WiFi configuration found");
+        info!("Creating AP config");
+        // TODO: better instructions
+        info!("To configure the device connect to the Wi-Fi network: {:?}. Go to the IP address below and submit the form", SSID);
 
         // Access Point configuration
-        let wifi_configuration = wifi::Configuration::AccessPoint(AccessPointConfiguration {
+        wifi::Configuration::AccessPoint(AccessPointConfiguration {
             ssid: SSID.try_into().unwrap(),
             ssid_hidden: false,
             channel: 0,
             ..Default::default()
-        });
-
-        wifi.set_configuration(&wifi_configuration).unwrap();
-
-        info!("Creating AP");
+        })
     } else {
-        info!("Recovering WiFi configuration");
-    }
+        let config = wifi.get_configuration().unwrap();
+        info!("Found Wi-Fi configuration: {:?}", config);
+
+        config
+    };
+
+    // Set the configuration
+    wifi.set_configuration(&config).unwrap();
 
     // Start WiFi
     wifi.start().unwrap();
+    if let Configuration::Mixed(_, _) = config {
+        wifi.connect().unwrap();
+    }
     wifi.wait_netif_up().unwrap();
 
-    // Check for previous TCP ip
-    let mut buffer: [u8; 63] = [0; 63];
-    nvs.get_str("Server IP", &mut buffer).unwrap();
-    let mut ip = std::str::from_utf8(&buffer).unwrap().to_owned();
-
+    // ---------------- //
+    // Form page SERVER //
+    // ---------------- //
     // HTTP server configuration
     let server_configuration = esp_idf_svc::http::server::Configuration {
         stack_size: STACK_SIZE,
@@ -112,10 +133,10 @@ fn main() {
     };
 
     let mut server = EspHttpServer::new(&server_configuration).unwrap();
-
-    let (sender, receiver) = std::sync::mpsc::sync_channel(10);
-
     info!("Server created");
+
+    // Channel for communicating the new configs
+    let (sender, receiver) = std::sync::mpsc::sync_channel(10);
 
     // HTTP server get requests handler
     server
@@ -133,6 +154,42 @@ fn main() {
         })
         .unwrap();
 
+    // ----------------- //
+    // TCP client config //
+    // ----------------- //
+    // Check for previous TCP server ip
+    let mut buffer: [u8; 63] = [0; 63];
+    nvs.get_str("Server IP", &mut buffer).unwrap();
+    let mut ip = std::str::from_utf8(&buffer).unwrap().to_owned();
+
+    if IS_CONNECTED_TO_WIFI.load(core::sync::atomic::Ordering::Relaxed) {
+        info!("About to open a TCP connection with ip: {}", ip);
+        let mut connect = TcpStream::connect(ip);
+        if connect.is_err() {
+            info!("Failed to connect to the TCP server: {:?}", connect.err());
+            info!(
+                "Switching to default TCP server address: {}",
+                TCP_SERVER_ADDR
+            );
+
+            nvs.set_str("Server IP", TCP_SERVER_ADDR).unwrap();
+            ip = TCP_SERVER_ADDR.to_owned();
+
+            connect = TcpStream::connect(ip);
+        }
+        let mut stream = connect.unwrap();
+        let err = stream.try_clone();
+        if let Err(err) = err {
+            info!(
+            "Duplication of file descriptors does not work (yet) on the ESP-IDF, as expected: {}",
+            err
+        );
+        }
+    }
+
+    // -------------- //
+    // SD card config //
+    // -------------- //
     // Initialize SD card
     let spi_config = SpiConfig::new();
     let spi_config = spi_config.baudrate(20.MHz().into());
@@ -154,65 +211,11 @@ fn main() {
 
     let mut sd = SD::new(&mut spi_device).ok();
 
-    // Initialize the WiFi
-    // let mut esp_wifi =
-    //    EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs.clone())).unwrap();
-    //let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sys_loop.clone()).unwrap();
-
-    // wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()));
-
-    // wifi.set_configuration(&Configuration::AccessPoint(
-    //     AccessPointConfiguration {
-    //         ssid: "iot-device".try_into().unwrap(),
-    //         ssid_hidden: false,
-    //         channel: 0,
-    //         protocols: Protocol::P802D11B
-    //             | Protocol::P802D11BG
-    //             | Protocol::P802D11BGN
-    //             | Protocol::P802D11BGNLR,
-    //         ..Default::default()
-    //     },
-    // ));
-
-    // wifi.start().unwrap();
-    // info!("Wifi started");
-
-    // thread::sleep(Duration::from_secs(1));
-
-    // wifi.set_configuration(&Configuration::Client(ClientConfiguration {
-    //         ssid: SSID.try_into().unwrap(),
-    //         bssid: None,
-    //         auth_method: AuthMethod::WPA2Personal,
-    //         password: PASSWORD.try_into().unwrap(),
-    //         channel: None,
-    //     },));
-    // wifi.connect().unwrap();
-    // info!("Wifi connected");
-
-    // To avoid this issue: https://github.com/espressif/esp-idf/issues/10341
-    let channel = unsafe {
-        esp_idf_hal::sys::esp_wifi_set_promiscuous(true);
-        let channel = match wifi.get_configuration().unwrap() {
-            Configuration::Mixed(client, _) => client.channel.expect("Channel not set"),
-            _ => panic!("Invalid configuration"),
-        };
-        let second = wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
-        esp_idf_hal::sys::esp_wifi_set_channel(channel, second);
-        esp_idf_hal::sys::esp_wifi_set_promiscuous(false);
-        channel
-    };
-
+    // -------------- //
+    // ESP-NOW config //
+    // -------------- //
     // EspNow start
     let espnow = EspNow::take().unwrap();
-
-    let peer = esp_idf_hal::sys::esp_now_peer_info {
-        channel,
-        ifidx: esp_idf_hal::sys::wifi_interface_t_WIFI_IF_AP,
-        encrypt: false,
-        peer_addr: [0x5E, 0xD9, 0x94, 0x27, 0x97, 0x15],
-        ..Default::default()
-    };
-    espnow.add_peer(peer).unwrap();
 
     let (tx, rx) = std::sync::mpsc::sync_channel(100);
     espnow
@@ -220,51 +223,54 @@ fn main() {
         .expect("Failed to register receive callback");
     info!("EspNow started");
 
+    // Adding peers in the same channel as the STA
+    // To avoid this issue: https://github.com/espressif/esp-idf/issues/10341
+    if let Configuration::Mixed(client, _) = wifi.get_configuration().unwrap() {
+        // Set the channel
+        let channel = client.channel.expect("Channel not set");
+        let second = wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
+        unsafe {
+            esp_idf_hal::sys::esp_wifi_set_channel(channel, second);
+            esp_idf_hal::sys::esp_wifi_set_promiscuous(false);
+        }
+
+        // Add peers
+        let peer = esp_idf_hal::sys::esp_now_peer_info {
+            channel,
+            ifidx: esp_idf_hal::sys::wifi_interface_t_WIFI_IF_AP,
+            encrypt: false,
+            peer_addr: [0x5E, 0xD9, 0x94, 0x27, 0x97, 0x15],
+            ..Default::default()
+        };
+        espnow.add_peer(peer).unwrap();
+    }
+
     thread::sleep(Duration::from_secs(1));
 
     // Vec for deserializing the frames from ESP-NOW
     let mut vec = Vec::new();
 
+    // Create mutex of WiFi
+    let wifi = Arc::new(Mutex::new(wifi));
+
+    // Spawning a thread to handle the requests from the HTTP server (i.e. the
+    // configuration changes).
+    // TODO: serve davvero sto channel?
+    let (new_ip_sig_sx, new_ip_sig_rx) = mpsc::channel();
+    thread::spawn(move || {
+        request_handler_thread(
+            receiver,
+            wifi,
+            nvs,
+            new_ip_sig_sx,
+            &espnow,
+            &IS_CONNECTED_TO_WIFI,
+        )
+    });
+
     loop {
         // Sleep for a FreeRTOS tick, this allow the scheduler to run another task
         sleep(Duration::from_millis(10));
-
-        // Check if there is a new configuration
-        // TODO: maybe do this every once in a while
-        if let Ok((ssid, password, new_ip)) = receiver.try_recv() {
-            // FIXME: così ogni volta si deve riscrivere tutta la configurazione (se si
-            // vuole cambiare solo l'ip bisogna riscrivere anche ssid e pwd)
-            let _ = wifi.disconnect();
-
-            info!("Initilizing Wi-Fi with new configuration");
-
-            let new_config = wifi::Configuration::Mixed(
-                ClientConfiguration {
-                    ssid,
-                    bssid: None,
-                    auth_method: AuthMethod::WPA2Personal,
-                    password,
-                    channel: None,
-                },
-                AccessPointConfiguration {
-                    ssid: SSID.try_into().unwrap(),
-                    ssid_hidden: false,
-                    channel: 0,
-                    ..Default::default()
-                },
-            );
-
-            wifi.set_configuration(&new_config).unwrap();
-
-            wifi.connect().unwrap();
-            info!("Connected to Wi-Fi");
-
-            wifi.wait_netif_up().unwrap();
-
-            // Save the new IP
-            nvs.set_str("Server IP", &new_ip).unwrap();
-            ip = new_ip.as_str().to_owned();
-        }
 
         if let Some(mut sd_inner) = sd {
             // Receive data from the ESP-NOW
@@ -278,11 +284,21 @@ fn main() {
 
             if IS_CONNECTED_TO_WIFI.load(core::sync::atomic::Ordering::Relaxed) {
                 // There is a connection, send data to the server from the SD card
-                let _sd_frames = sd_inner.read();
+                let sd_frames = sd_inner.read();
+                if sd_frames.is_err() {
+                    warn!("Failed to read from the SD card");
+                }
+                frames.extend(sd_frames.unwrap_or_default());
 
-                // TODO: logic
-                info!("TCP connection starting...");
-                tcp_client(&ip).unwrap();
+                for frame in frames {
+                    if let Ok(_message) =
+                        <messages::Frame as std::convert::TryInto<Message>>::try_into(frame)
+                    {
+                        // TODO: logic
+                    } else {
+                        warn!("Failed to convert frame ({:?}) into message", frame);
+                    }
+                }
             } else {
                 // There is no connection, store data in the SD card
                 for frame in frames {
@@ -297,9 +313,9 @@ fn main() {
         } else {
             // panic!("Arrivati");
             // Try to recover the SD card
-            drop(sd);
-            // TODO: to this less frequently
-            sd = SD::new(&mut spi_device).ok();
+            // drop(sd);
+            // // TODO: to this less frequently
+            // sd = SD::new(&mut spi_device).ok();
         }
     }
 }
