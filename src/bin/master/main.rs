@@ -7,7 +7,7 @@ use embedded_svc::{
     wifi::{self, AccessPointConfiguration},
 };
 use esp_idf_hal::{
-    gpio::{AnyIOPin, PinDriver},
+    gpio::PinDriver,
     peripherals::Peripherals,
     prelude::*,
     spi::{config::DriverConfig, SpiConfig, SpiDeviceDriver},
@@ -180,7 +180,9 @@ fn main() {
         peripherals.pins.gpio1,
         peripherals.pins.gpio2,
         Some(peripherals.pins.gpio0),
-        Option::<AnyIOPin>::None,
+        // Server il CS?
+        Some(peripherals.pins.gpio42),
+        //Option::<AnyIOPin>::None,
         &DriverConfig::default(),
         &spi_config,
     )
@@ -292,15 +294,28 @@ fn main() {
 
             // Extend the frames with the data from the SD card (if any)
             if let Some(mut sd_inner) = sd {
+                // info!("Reading from the SD card");
                 let sd_frames = sd_inner.read();
                 if sd_frames.is_err() {
                     warn!("Failed to read from the SD card");
                 }
                 frames.extend(sd_frames.unwrap_or_default());
 
+                // // Try to write something
+                // let message = firmware::PingMessage::new();
+                // info!("Writing {:#?} to the SD card", message);
+                // if let Err(e) = sd_inner.write(&message.into()) {
+                //     warn!("Failed to write to the SD card: {:?}", e);
+                // }
+
                 // TODO: is there a way to make it work without reinitializing the SD card
                 // option every time?
                 sd = Some(sd_inner);
+            } else {
+                // Try to recover the SD card
+                drop(sd);
+                // TODO: to this less frequently
+                sd = SD::new(&mut spi_device).ok();
             }
 
             // Send the data to the server
@@ -336,9 +351,9 @@ fn main() {
         } else {
             // panic!("Arrivati");
             // Try to recover the SD card
-            // drop(sd);
-            // // TODO: to this less frequently
-            // sd = SD::new(&mut spi_device).ok();
+            drop(sd);
+            // TODO: to this less frequently
+            sd = SD::new(&mut spi_device).ok();
         }
     }
 }

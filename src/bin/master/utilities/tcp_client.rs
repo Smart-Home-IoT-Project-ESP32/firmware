@@ -1,6 +1,6 @@
 use std::net::TcpStream;
 
-use log::info;
+use log::{info, warn};
 
 use crate::TCP_SERVER_ADDR;
 
@@ -18,9 +18,9 @@ pub fn connect() {
     info!("About to open a TCP connection with ip: {}", ip);
     let mut connect = TcpStream::connect(ip);
     if connect.is_err() {
-        info!("Failed to connect to the TCP server: {:?}", connect.err());
+        warn!("Failed to connect to the TCP server: {:?}", connect.err());
         info!(
-            "Switching to default TCP server address: {}",
+            "Trying with default TCP server address: {}",
             TCP_SERVER_ADDR
         );
 
@@ -32,17 +32,23 @@ pub fn connect() {
 
         connect = TcpStream::connect(TCP_SERVER_ADDR);
     }
-    let stream = connect.unwrap();
-    let err = stream.try_clone();
-    if let Err(err) = err {
-        info!(
+    if let Ok(stream) = connect {
+        let err = stream.try_clone();
+        if let Err(err) = err {
+            info!(
             "Duplication of file descriptors does not work (yet) on the ESP-IDF, as expected: {}",
             err
         );
-    }
+        }
 
-    // Save the TCP stream in the global state
-    gs.tcp_stream.lock().unwrap().replace(stream);
+        // Save the TCP stream in the global state
+        gs.tcp_stream.lock().unwrap().replace(stream);
+    } else {
+        warn!(
+            "Failed to connect to the default TCP server: {:?}",
+            connect.err()
+        );
+    }
 }
 
 pub fn shutdown() {
