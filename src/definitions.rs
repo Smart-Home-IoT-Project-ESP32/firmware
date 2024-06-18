@@ -4,7 +4,7 @@ use messages::dynamic::DynamicAccess;
 
 messages::message_structs!(Message, "definitions");
 
-fn set_message_device_id(message: &mut Message, device_id: u8) -> Result<()> {
+pub fn set_message_device_id(message: &mut Message, device_id: u8) -> Result<()> {
     // get id of message
     let id = message.get_id();
     // get device_id field of message

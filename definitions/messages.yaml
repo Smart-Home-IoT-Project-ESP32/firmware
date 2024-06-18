@@ -94,3 +94,13 @@
           padding:
             bits: 7
 
+- name: "Ping"
+  description: "Ping for slaves."
+  id:
+    raw-std: 0x06
+  fields:
+    - name: "Placeholder"
+      description: "A message cannot be empty"
+      content:
+        variable:
+          type: u8

@@ -1,4 +1,4 @@
-mod definitions;
+pub mod definitions;
 pub mod utilities;
 
 pub use definitions::*;

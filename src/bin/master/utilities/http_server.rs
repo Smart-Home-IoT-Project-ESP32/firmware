@@ -1,18 +1,13 @@
 use core::time::Duration;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 use anyhow::Error;
 use embedded_svc::http::Headers;
 use esp_idf_hal::io::{EspIOError, Read, Write};
-use esp_idf_svc::espnow::EspNow;
 use esp_idf_svc::http::server::{EspHttpConnection, Request};
-use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 use esp_idf_svc::wifi::{
-    self, AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration, Configuration,
-    EspWifi,
+    self, AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration,
 };
 use esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
 use log::info;
@@ -46,7 +41,7 @@ pub fn get_request_handler(req: Request<&mut EspHttpConnection>) -> Result<(), E
 /// Handle the POST request for the form data.
 pub fn post_request_handler(
     mut req: Request<&mut EspHttpConnection>,
-    sender: &SyncSender<(
+    connection_config_sender: &SyncSender<(
         heapless::String<32>,
         heapless::String<64>,
         heapless::String<63>,
@@ -74,7 +69,7 @@ pub fn post_request_handler(
         let pwd: heapless::String<64> = form.wifi_pass.try_into().unwrap();
         let ip: heapless::String<63> = form.ip_addr.try_into().unwrap();
 
-        sender.send((ssid, pwd, ip)).unwrap();
+        connection_config_sender.send((ssid, pwd, ip)).unwrap();
     } else {
         resp.write_all("JSON error".as_bytes())?;
     }
@@ -89,24 +84,28 @@ pub fn request_handler_thread(
         heapless::String<64>,
         heapless::String<63>,
     )>,
-    wifi: Arc<Mutex<BlockingWifi<EspWifi>>>,
-    mut nvs: EspNvs<NvsDefault>,
-    ip: std::sync::mpsc::Sender<heapless::String<63>>,
-    espnow: &EspNow,
-    connected_to_wifi: &AtomicBool,
 ) {
+    let gs = crate::utilities::global_state::GlobalState::get();
+
     info!("HTTP server request handler thread started");
     loop {
+        // Sleep for a FreeRTOS tick, this allow the scheduler to run another task
         thread::sleep(Duration::from_millis(10));
+
         match receiver.try_recv() {
             Ok((ssid, password, new_ip)) => {
                 // FIXME: così ogni volta si deve riscrivere tutta la configurazione (se si
                 // vuole cambiare solo l'ip bisogna riscrivere anche ssid e pwd)
 
+                // ---------------- //
+                // WIFI reconfigure //
+                // ---------------- //
                 // Signal disconnection
-                connected_to_wifi.store(false, std::sync::atomic::Ordering::Relaxed);
+                gs.is_connected_to_wifi
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 // Disconnect from the current Wi-Fi
-                let mut wifi_lock = wifi.lock().unwrap();
+                let mut wifi_option_lock = gs.wifi.lock().unwrap();
+                let wifi_lock = wifi_option_lock.as_mut().unwrap();
                 let _ = wifi_lock.disconnect();
 
                 info!("Initilizing Wi-Fi with new configuration");
@@ -137,13 +136,41 @@ pub fn request_handler_thread(
 
                 wifi_lock.wait_netif_up().unwrap();
 
-                // Save the new IP
-                nvs.set_str("Server IP", &new_ip).unwrap();
-                ip.send(new_ip).unwrap();
+                // -------------------------- //
+                // TCP connection reconfigure //
+                // -------------------------- //
+                let mut buffer: [u8; 63] = [0; 63];
+                gs.nvs_connect_configs_ns
+                    .lock()
+                    .unwrap()
+                    .get_str("Server IP", &mut buffer)
+                    .unwrap();
+                let old_ip = std::str::from_utf8(&buffer).unwrap();
+                if new_ip != old_ip {
+                    info!("New IP address: {}", new_ip);
+                    gs.nvs_connect_configs_ns
+                        .lock()
+                        .unwrap()
+                        .set_str("Server IP", &new_ip)
+                        .unwrap();
+
+                    // Shutdown the previous connection
+                    crate::utilities::tcp_client::shutdown();
+                    // Connect to the new IP address
+                    crate::utilities::tcp_client::connect();
+                } else {
+                    info!("IP address not changed, still: {}", new_ip);
+                }
 
                 // ------- //
                 // ESP-NOW //
                 // ------- //
+                // Get espnow from global state
+                let espnow_option_lock = gs.esp_now.lock().unwrap();
+                let espnow = espnow_option_lock
+                    .as_ref()
+                    .expect("ESP-NOW not initialized");
+
                 // Get the new channel
                 let channel = unsafe {
                     esp_idf_hal::sys::esp_wifi_set_promiscuous(true);
@@ -156,24 +183,29 @@ pub fn request_handler_thread(
                     esp_idf_hal::sys::esp_wifi_set_promiscuous(false);
                     channel
                 };
-                // Modify channel in peer info
-                let peer = esp_idf_hal::sys::esp_now_peer_info {
+
+                // Modify channel in the broadcast peer
+                let broadcast = esp_idf_hal::sys::esp_now_peer_info {
                     channel,
                     ifidx: esp_idf_hal::sys::wifi_interface_t_WIFI_IF_AP,
                     encrypt: false,
-                    peer_addr: [0x5E, 0xD9, 0x94, 0x27, 0x97, 0x15],
+                    peer_addr: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
                     ..Default::default()
                 };
-                // Check if the peer is already added
-                if espnow.get_peer(peer.peer_addr).is_err() {
-                    espnow.add_peer(peer).unwrap();
+                // Check if the broadcast is already added
+                if espnow.get_peer(broadcast.peer_addr).is_err() {
+                    espnow.add_peer(broadcast).unwrap();
                 } else {
-                    espnow.mod_peer(peer).unwrap();
+                    espnow.mod_peer(broadcast).unwrap();
                 }
+
+                // Drop the lock
+                drop(espnow_option_lock);
 
                 // Signal connection
                 info!("Signaling connection");
-                connected_to_wifi.store(true, std::sync::atomic::Ordering::Relaxed);
+                gs.is_connected_to_wifi
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Err(err) => {
                 if let std::sync::mpsc::TryRecvError::Empty = err {
