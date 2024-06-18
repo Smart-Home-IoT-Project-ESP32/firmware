@@ -4,11 +4,7 @@ use core::time::Duration;
 
 use dht_sensor::{dht11, DhtReading};
 use embedded_svc::wifi::{ClientConfiguration, Configuration};
-use esp_idf_hal::{
-    delay::{self, BLOCK},
-    gpio,
-    prelude::*,
-};
+use esp_idf_hal::{delay, gpio, prelude::*};
 use esp_idf_svc::espnow::{EspNow, PeerInfo, SendStatus};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
