@@ -1,5 +1,6 @@
 use core::{sync::atomic::AtomicBool, time::Duration};
 use std::{
+    io::Write,
     net::TcpStream,
     sync::{
         mpsc::{self, SyncSender},
@@ -25,7 +26,7 @@ use firmware::{
 };
 use messages::Frame;
 use std::thread;
-use utilities::http_server::request_handler_thread;
+use utilities::{global_state::GlobalState, http_server::request_handler_thread};
 
 use esp_idf_hal::sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
 use esp_idf_svc::{espnow::EspNow, http::server::EspHttpServer};
@@ -46,7 +47,7 @@ const STACK_SIZE: usize = 10240;
 /// AP SSID
 const SSID: &str = "Smart Home Hub";
 /// Default TCP server address (telegraf)
-const TCP_SERVER_ADDR: &str = "192.168.137.1:8094";
+const TCP_SERVER_ADDR: &str = "4.232.184.193:8094";
 
 fn espnow_recv_cb(
     _mac_address: &[u8],
@@ -61,6 +62,10 @@ fn espnow_recv_cb(
 fn main() {
     // Patches, logger and watchdog reconfiguration
     init();
+
+    // Init the global state
+    GlobalState::init();
+    let gs = GlobalState::get();
 
     // Taking peripherals
     let peripherals = Peripherals::take().unwrap();
@@ -119,6 +124,7 @@ fn main() {
     // Start WiFi
     wifi.start().unwrap();
     if let Configuration::Mixed(_, _) = config {
+        IS_CONNECTED_TO_WIFI.store(true, core::sync::atomic::Ordering::Relaxed);
         wifi.connect().unwrap();
     }
     wifi.wait_netif_up().unwrap();
@@ -185,6 +191,9 @@ fn main() {
             err
         );
         }
+
+        // Save the TCP stream in the global state
+        gs.tcp_stream.lock().unwrap().replace(stream);
     }
 
     // -------------- //
@@ -256,55 +265,77 @@ fn main() {
     // Spawning a thread to handle the requests from the HTTP server (i.e. the
     // configuration changes).
     // TODO: serve davvero sto channel?
-    let (new_ip_sig_sx, new_ip_sig_rx) = mpsc::channel();
-    thread::spawn(move || {
-        request_handler_thread(
-            receiver,
-            wifi,
-            nvs,
-            new_ip_sig_sx,
-            &espnow,
-            &IS_CONNECTED_TO_WIFI,
-        )
-    });
+    let (new_ip_sig_sx, new_ip_sig_rx) = mpsc::channel::<heapless::String<63>>();
+    let _ = thread::Builder::new()
+        .stack_size(4096)
+        .name("Configuration changes handler".to_string())
+        .spawn(move || {
+            request_handler_thread(
+                receiver,
+                wifi,
+                nvs,
+                new_ip_sig_sx,
+                &espnow,
+                &IS_CONNECTED_TO_WIFI,
+            )
+        });
 
+    // --------- //
+    // MAIN LOOP //
+    // --------- //
+    let mut i = 0;
     loop {
         // Sleep for a FreeRTOS tick, this allow the scheduler to run another task
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(100));
 
-        if let Some(mut sd_inner) = sd {
-            // Receive data from the ESP-NOW
-            let mut frames = Vec::new();
-            while let Ok(raw_frames) = rx.try_recv() {
-                vec.extend_from_slice(raw_frames.as_slice());
-                if let Ok(deserialized_frames) = Frame::deserialize_many(&mut vec) {
-                    frames.extend(deserialized_frames);
-                }
+        // Receive data from the ESP-NOW
+        let mut frames = Vec::new();
+        while let Ok(raw_frames) = rx.try_recv() {
+            vec.extend_from_slice(raw_frames.as_slice());
+            if let Ok(deserialized_frames) = Frame::deserialize_many(&mut vec) {
+                frames.extend(deserialized_frames);
             }
+        }
 
-            if IS_CONNECTED_TO_WIFI.load(core::sync::atomic::Ordering::Relaxed) {
-                // There is a connection, send data to the server from the SD card
+        if IS_CONNECTED_TO_WIFI.load(core::sync::atomic::Ordering::Relaxed) {
+            // If there is a connection to the Wi-Fi, send the data to the server
+
+            // Extend the frames with the data from the SD card (if any)
+            if let Some(mut sd_inner) = sd {
                 let sd_frames = sd_inner.read();
                 if sd_frames.is_err() {
                     warn!("Failed to read from the SD card");
                 }
                 frames.extend(sd_frames.unwrap_or_default());
 
-                for frame in frames {
-                    if let Ok(_message) =
-                        <messages::Frame as std::convert::TryInto<Message>>::try_into(frame)
-                    {
-                        // TODO: logic
-                    } else {
-                        warn!("Failed to convert frame ({:?}) into message", frame);
-                    }
+                // TODO: is there a way to make it work without reinitializing the SD card
+                // option every time?
+                sd = Some(sd_inner);
+            }
+
+            // Send the data to the server
+            for frame in frames {
+                if let Ok(_message) =
+                    <messages::Frame as std::convert::TryInto<Message>>::try_into(frame)
+                {
+                    // TODO: logic
+                } else {
+                    warn!("Failed to convert frame ({:?}) into message", frame);
                 }
-            } else {
-                // There is no connection, store data in the SD card
-                for frame in frames {
-                    // TODO: what to do if sd is not working?
-                    sd_inner.write(&frame).unwrap();
-                }
+            }
+            // TODO: remove below
+            if let Some(stream) = gs.tcp_stream.lock().unwrap().as_mut() {
+                info!("Sending message to the TCP server: {:?}", i);
+                stream
+                    .write_all(format!("weather temperature={}\n", i).as_bytes())
+                    .unwrap();
+                i += 1;
+            }
+        } else if let Some(mut sd_inner) = sd {
+            // There is no connection, store data in the SD card
+            for frame in frames {
+                // TODO: what to do if sd is not working?
+                sd_inner.write(&frame).unwrap();
             }
 
             // TODO: is there a way to make it work without reinitializing the SD card

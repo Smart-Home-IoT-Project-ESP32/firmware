@@ -1,6 +1,8 @@
+use core::time::Duration;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use anyhow::Error;
 use embedded_svc::http::Headers;
@@ -93,8 +95,10 @@ pub fn request_handler_thread(
     espnow: &EspNow,
     connected_to_wifi: &AtomicBool,
 ) {
+    info!("HTTP server request handler thread started");
     loop {
-        match receiver.recv() {
+        thread::sleep(Duration::from_millis(10));
+        match receiver.try_recv() {
             Ok((ssid, password, new_ip)) => {
                 // FIXME: così ogni volta si deve riscrivere tutta la configurazione (se si
                 // vuole cambiare solo l'ip bisogna riscrivere anche ssid e pwd)
@@ -168,9 +172,13 @@ pub fn request_handler_thread(
                 }
 
                 // Signal connection
+                info!("Signaling connection");
                 connected_to_wifi.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Err(err) => {
+                if let std::sync::mpsc::TryRecvError::Empty = err {
+                    continue;
+                }
                 info!("Error receiving new configuration: {}", err);
             }
         }
