@@ -1,5 +1,5 @@
 use core::time::Duration;
-use std::{io::Write, sync::mpsc::SyncSender, thread::sleep, time::SystemTime};
+use std::{sync::mpsc::SyncSender, thread::sleep, time::SystemTime};
 
 use embedded_sdmmc::SdMmcSpi;
 use embedded_svc::{
@@ -40,7 +40,7 @@ const STACK_SIZE: usize = 10240;
 /// AP SSID
 const SSID: &str = "Smart Home Hub";
 /// Default TCP server address (telegraf)
-const TCP_SERVER_ADDR: &str = "4.232.184.193:8094";
+const TCP_SERVER_ADDR: &str = "tcp://4.232.184.193:8094";
 /// Broadcast ping frequency (interval)
 const BROADCAST_PING_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -324,7 +324,8 @@ fn main() {
                     // TODO: Correct ID
                     set_message_device_id(&mut message, 1).unwrap();
                     let frame: Frame = message.into();
-                    if let Err(e) = stream.write_all(&frame.serialize()) {
+                    let influx_lp = frame.to_point().unwrap();
+                    if let Err(e) = stream.write_point(&influx_lp) {
                         warn!("Failed to send data to the TCP server: {:?}", e);
                         // TODO: If its peer not found it is normal if the WiFi is not
                         // configured yet because we need to know the channel to add the

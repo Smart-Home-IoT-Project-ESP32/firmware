@@ -10,6 +10,7 @@ use esp_idf_svc::{
     wifi::{BlockingWifi, EspWifi},
 };
 use log::info;
+use telegraf::Client;
 
 static GLOBAL_STATE: OnceLock<Arc<GlobalState>> = OnceLock::new();
 
@@ -22,14 +23,13 @@ pub struct GlobalState {
     pub(crate) wifi: Mutex<Option<BlockingWifi<EspWifi<'static>>>>,
     pub(crate) is_connected_to_wifi: AtomicBool,
     pub(crate) esp_now: Mutex<Option<EspNow<'static>>>,
-    pub(crate) tcp_stream: Mutex<Option<TcpStream>>,
+    pub(crate) tcp_stream: Mutex<Option<Client>>,
 }
 
 impl Debug for GlobalState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GlobalState")
             .field("is_connected_to_wifi", &self.is_connected_to_wifi)
-            .field("tcp_stream", &self.tcp_stream)
             .finish()
     }
 }

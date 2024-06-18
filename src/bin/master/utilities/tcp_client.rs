@@ -1,6 +1,5 @@
-use std::net::TcpStream;
-
 use log::{info, warn};
+use telegraf::Client;
 
 use crate::TCP_SERVER_ADDR;
 
@@ -16,7 +15,7 @@ pub fn connect() {
     let ip = std::str::from_utf8(&buffer).unwrap();
 
     info!("About to open a TCP connection with ip: {}", ip);
-    let mut connect = TcpStream::connect(ip);
+    let mut connect = Client::new(ip);
     if connect.is_err() {
         warn!("Failed to connect to the TCP server: {:?}", connect.err());
         info!(
@@ -30,17 +29,9 @@ pub fn connect() {
             .set_str("Server IP", TCP_SERVER_ADDR)
             .unwrap();
 
-        connect = TcpStream::connect(TCP_SERVER_ADDR);
+        connect = Client::new(TCP_SERVER_ADDR);
     }
     if let Ok(stream) = connect {
-        let err = stream.try_clone();
-        if let Err(err) = err {
-            info!(
-            "Duplication of file descriptors does not work (yet) on the ESP-IDF, as expected: {}",
-            err
-        );
-        }
-
         // Save the TCP stream in the global state
         gs.tcp_stream.lock().unwrap().replace(stream);
     } else {

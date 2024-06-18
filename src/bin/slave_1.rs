@@ -8,8 +8,6 @@ use esp_idf_hal::{
     delay::{self, BLOCK},
     gpio,
     prelude::*,
-    task::notification::Notification,
-    task::wait_notification,
 };
 use esp_idf_svc::espnow::{EspNow, PeerInfo, SendStatus};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -71,12 +69,12 @@ fn main() {
     // Create a channel to communicate between threads
     let (sender, reciver) = std::sync::mpsc::sync_channel(10);
     // Notification to search for a master board on other channels
-    let channel_search = Notification::new();
-    let channel_search_notifier = channel_search.notifier();
+    let (channel_search_sender, channel_search_notifier) = std::sync::mpsc::sync_channel(1);
 
     // register reciving callback, this is used to add the master board to the peer list
     esp_now
         .register_recv_cb(|mac_address, _data| {
+            IS_SEARCHING_CHANNEL.store(false, Ordering::Relaxed);
             // Convert slice to array
             let mac_address_array = mac_address.try_into().unwrap();
             // If peer does not exist, add it
@@ -104,11 +102,8 @@ fn main() {
             }
 
             if num_fail > 10 {
-                // Safty: we don't call mem::forget on the Notification
-                unsafe {
-                    channel_search_notifier.notify(core::num::NonZeroU32::new(1).unwrap());
-                }
                 IS_SEARCHING_CHANNEL.store(true, Ordering::Relaxed);
+                let _ = channel_search_sender.try_send(());
             }
         })
         .unwrap();
@@ -154,7 +149,7 @@ fn main() {
                 std::thread::sleep(Duration::from_secs(5));
             }
             // channel found, wait untill a notification is received
-            wait_notification(BLOCK);
+            channel_search_notifier.recv().unwrap();
         }
     });
 
@@ -162,7 +157,6 @@ fn main() {
     loop {
         // Wait for a message
         let frame_to_send = reciver.recv().unwrap();
-        println!("Sending message: {:?}", frame_to_send);
         // If the peer exists, send the message
         if let Ok(peer) = esp_now.fetch_peer(true) {
             esp_now

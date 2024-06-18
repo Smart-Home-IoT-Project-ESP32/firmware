@@ -13,7 +13,7 @@ pub fn set_message_device_id(message: &mut Message, device_id: u8) -> Result<()>
         .unwrap()
         .fields
         .iter()
-        .find(|field| field.name == "device_id")
+        .find(|field| field.name == "Device ID")
         .ok_or(Error::FrameIsNotMessage)?;
     // set device_id field of message
     message.set_field(device_id_field, AnyField::U64(device_id.into()))

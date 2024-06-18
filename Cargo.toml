@@ -29,7 +29,8 @@ embedded-svc = { version = "0.27.1" }
 embedded-sdmmc = "0.4.0"
 
 # Libraries
-messages = { git = "ssh://git@github.com/Smart-Home-IoT-Project-ESP32/messages.git", default-features = false, features = ["dynamic"]}
+messages = { git = "ssh://git@github.com/Smart-Home-IoT-Project-ESP32/messages.git" }
+telegraf = "0.6.0"
 
 # Generic
 heapless = "0.8.0"
