@@ -1,5 +1,5 @@
 use core::time::Duration;
-use std::{sync::mpsc::SyncSender, thread::sleep, time::SystemTime};
+use std::{collections::HashMap, sync::mpsc::SyncSender, thread::sleep, time::SystemTime};
 
 use embedded_sdmmc::SdMmcSpi;
 use embedded_svc::{
@@ -7,7 +7,7 @@ use embedded_svc::{
     wifi::{self, AccessPointConfiguration},
 };
 use esp_idf_hal::{
-    gpio::PinDriver,
+    gpio::{AnyIOPin, PinDriver},
     peripherals::Peripherals,
     prelude::*,
     spi::{config::DriverConfig, SpiConfig, SpiDeviceDriver},
@@ -17,6 +17,7 @@ use firmware::{
     utilities::{init::init, sd::SD},
 };
 use messages::Frame;
+use serde::Serialize;
 use std::thread;
 use utilities::{global_state::GlobalState, http_server::request_handler_thread, tcp_client};
 
@@ -24,6 +25,7 @@ use esp_idf_hal::sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
 use esp_idf_svc::{
     espnow::{EspNow, BROADCAST},
     http::server::EspHttpServer,
+    sntp,
 };
 
 use esp_idf_svc::eventloop::*;
@@ -43,15 +45,19 @@ const SSID: &str = "Smart Home Hub";
 const TCP_SERVER_ADDR: &str = "tcp://4.232.184.193:8094";
 /// Broadcast ping frequency (interval)
 const BROADCAST_PING_INTERVAL: Duration = Duration::from_secs(2);
+/// Sd retry frequency (interval)
+const SD_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Callback invoked when a frame is received from the ESP-NOW.
+/// Sends the received data to the main thread with a channel.
 fn espnow_recv_cb(
-    _mac_address: &[u8],
+    mac_addr: &[u8],
     data: &[u8],
-    channel: &SyncSender<heapless::Vec<u8, MAX_DATA_LEN>>,
+    channel: &SyncSender<(Vec<u8>, heapless::Vec<u8, MAX_DATA_LEN>)>,
 ) {
     let vec_data = heapless::Vec::<u8, MAX_DATA_LEN>::from_slice(data).unwrap();
 
-    channel.send(vec_data).unwrap();
+    channel.send((mac_addr.to_vec(), vec_data)).unwrap();
 }
 
 fn main() {
@@ -112,6 +118,12 @@ fn main() {
         gs.is_connected_to_wifi
             .store(true, core::sync::atomic::Ordering::Relaxed);
         wifi.connect().unwrap();
+
+        // Start SNTP service
+        let sntp = sntp::EspSntp::new_default().expect("Failed to initialize SNTP");
+        info!("SNTP initialized");
+        // Keeping it around or else the SNTP service will stop
+        gs.sntp.lock().unwrap().replace(sntp);
     }
     wifi.wait_netif_up().unwrap();
 
@@ -180,15 +192,13 @@ fn main() {
         peripherals.pins.gpio1,
         peripherals.pins.gpio2,
         Some(peripherals.pins.gpio0),
-        // Server il CS?
-        Some(peripherals.pins.gpio42),
-        //Option::<AnyIOPin>::None,
+        Option::<AnyIOPin>::None,
         &DriverConfig::default(),
         &spi_config,
     )
     .unwrap();
 
-    let sdmmc_cs = PinDriver::output(peripherals.pins.gpio3).unwrap();
+    let sdmmc_cs = PinDriver::output(peripherals.pins.gpio42).unwrap();
     // Build an SDHandle Card interface out of an SPI device
     let mut spi_device = SdMmcSpi::new(spi, sdmmc_cs);
 
@@ -202,7 +212,7 @@ fn main() {
 
     let (tx, rx) = std::sync::mpsc::sync_channel(100);
     espnow
-        .register_recv_cb(move |mac_address, data| espnow_recv_cb(mac_address, data, &tx))
+        .register_recv_cb(move |mac_addr, data| espnow_recv_cb(mac_addr, data, &tx))
         .expect("Failed to register receive callback");
     info!("EspNow started");
 
@@ -241,8 +251,34 @@ fn main() {
 
     thread::sleep(Duration::from_secs(1));
 
-    // Vec for deserializing the frames from ESP-NOW
-    let mut vec = Vec::new();
+    // Hash for deserializing the frames from ESP-NOW
+    let mut hash = HashMap::new();
+
+    // Search for saved IDs in the NVS
+    let mut buf = [0; 63];
+    let slaves_id = gs
+        .nvs_connect_configs_ns
+        .lock()
+        .unwrap()
+        .get_str("Slaves IDs", &mut buf)
+        .unwrap();
+    let mut slaves_id: HashMap<Vec<u8>, u8> = if let Some(slaves_id_str) = slaves_id {
+        serde_json::from_str(slaves_id_str).unwrap()
+    } else {
+        // Save in the NVs
+        let slaves_id = HashMap::new();
+        let mut buf = Vec::new();
+        let mut ser = serde_json::Serializer::new(&mut buf);
+        hash.serialize(&mut ser).unwrap();
+        let str = std::str::from_utf8(&buf).unwrap();
+        gs.nvs_connect_configs_ns
+            .lock()
+            .unwrap()
+            .set_str("Slaves IDs", str)
+            .unwrap();
+
+        slaves_id
+    };
 
     // Spawning a thread to handle the requests from the HTTP server (i.e. the
     // configuration changes).
@@ -255,6 +291,7 @@ fn main() {
     // MAIN LOOP //
     // --------- //
     let mut last_broadcast_ts: Option<SystemTime> = None;
+    let mut last_sd_retry: Option<SystemTime> = None;
     loop {
         // Sleep for a FreeRTOS tick, this allow the scheduler to run another task
         sleep(Duration::from_millis(10));
@@ -278,13 +315,63 @@ fn main() {
         }
 
         // Receive data from the ESP-NOW
-        let mut frames = Vec::new();
-        while let Ok(raw_frames) = rx.try_recv() {
+        let mut frames_hash = HashMap::new();
+        while let Ok((mac_addr, raw_frames)) = rx.try_recv() {
+            let vec = hash.entry(mac_addr.clone()).or_insert_with(Vec::new);
+
             vec.extend_from_slice(raw_frames.as_slice());
-            if let Ok(deserialized_frames) = Frame::deserialize_many(&mut vec) {
-                frames.extend(deserialized_frames);
+            if let Ok(deserialized_frames) = Frame::deserialize_many(vec) {
+                let frames_vec = frames_hash.entry(mac_addr).or_insert_with(Vec::new);
+                frames_vec.extend(deserialized_frames);
             }
         }
+
+        // Write IDs to each frame
+        let mut changed_slaves_id = false;
+        let mut len = slaves_id.len();
+        let mut frames_with_id: Vec<Frame> = Vec::new();
+        for (mac_addr, frames) in frames_hash {
+            let id = slaves_id.entry(mac_addr).or_insert_with(|| {
+                changed_slaves_id = true;
+                len += 1;
+                (len - 1) as u8
+            });
+
+            frames_with_id = frames
+                .iter()
+                .filter_map(|frame| frame.try_into().ok())
+                .map(|mut message| {
+                    set_message_device_id(&mut message, *id).unwrap();
+                    message.into()
+                })
+                .collect();
+        }
+
+        // Save in the NVS the new IDs
+        if changed_slaves_id {
+            let mut buf = Vec::new();
+            let mut ser = serde_json::Serializer::new(&mut buf);
+            hash.serialize(&mut ser).unwrap();
+            let str = std::str::from_utf8(&buf).unwrap();
+            gs.nvs_connect_configs_ns
+                .lock()
+                .unwrap()
+                .set_str("Slaves IDs", str)
+                .unwrap();
+        }
+
+        // Frames from slaves are timestamped with the time of the reception
+        let mut frames_with_id = frames_with_id
+            .iter()
+            .map(|&x| {
+                x.set_timestamp(
+                    SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                )
+            })
+            .collect::<Vec<_>>();
 
         if gs
             .is_connected_to_wifi
@@ -299,7 +386,7 @@ fn main() {
                 if sd_frames.is_err() {
                     warn!("Failed to read from the SD card");
                 }
-                frames.extend(sd_frames.unwrap_or_default());
+                frames_with_id.extend(sd_frames.unwrap_or_default());
 
                 // // Try to write something
                 // let message = firmware::PingMessage::new();
@@ -311,19 +398,18 @@ fn main() {
                 // TODO: is there a way to make it work without reinitializing the SD card
                 // option every time?
                 sd = Some(sd_inner);
-            } else {
+            } else if last_sd_retry.is_none()
+                || last_sd_retry.unwrap().elapsed().unwrap() > SD_RETRY_INTERVAL
+            {
                 // Try to recover the SD card
                 drop(sd);
-                // TODO: to this less frequently
                 sd = SD::new(&mut spi_device).ok();
+                last_sd_retry = Some(SystemTime::now());
             }
 
             // Send the data to the server
             if let Some(stream) = gs.tcp_stream.lock().unwrap().as_mut() {
-                for mut message in frames.iter().filter_map(|frame| frame.try_into().ok()) {
-                    // TODO: Correct ID
-                    set_message_device_id(&mut message, 1).unwrap();
-                    let frame: Frame = message.into();
+                for frame in frames_with_id {
                     let influx_lp = frame.to_point().unwrap();
                     if let Err(e) = stream.write_point(&influx_lp) {
                         warn!("Failed to send data to the TCP server: {:?}", e);
@@ -341,7 +427,7 @@ fn main() {
             }
         } else if let Some(mut sd_inner) = sd {
             // There is no connection, store data in the SD card
-            for frame in frames {
+            for frame in frames_with_id {
                 // TODO: what to do if sd is not working?
                 sd_inner.write(&frame).unwrap();
             }
@@ -349,12 +435,13 @@ fn main() {
             // TODO: is there a way to make it work without reinitializing the SD card
             // option every time?
             sd = Some(sd_inner);
-        } else {
-            // panic!("Arrivati");
+        } else if last_sd_retry.is_none()
+            || last_sd_retry.unwrap().elapsed().unwrap() > SD_RETRY_INTERVAL
+        {
             // Try to recover the SD card
             drop(sd);
-            // TODO: to this less frequently
             sd = SD::new(&mut spi_device).ok();
+            last_sd_retry = Some(SystemTime::now());
         }
     }
 }

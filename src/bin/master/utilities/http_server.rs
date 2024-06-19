@@ -6,6 +6,7 @@ use anyhow::Error;
 use embedded_svc::http::Headers;
 use esp_idf_hal::io::{EspIOError, Read, Write};
 use esp_idf_svc::http::server::{EspHttpConnection, Request};
+use esp_idf_svc::sntp;
 use esp_idf_svc::wifi::{
     self, AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration,
 };
@@ -135,6 +136,12 @@ pub fn request_handler_thread(
                 info!("Connected to Wi-Fi");
 
                 wifi_lock.wait_netif_up().unwrap();
+
+                // Start SNTP service
+                let sntp = sntp::EspSntp::new_default().expect("Failed to initialize SNTP");
+                info!("SNTP initialized");
+                // Keeping it around or else the SNTP service will stop
+                gs.sntp.lock().unwrap().replace(sntp);
 
                 // -------------------------- //
                 // TCP connection reconfigure //

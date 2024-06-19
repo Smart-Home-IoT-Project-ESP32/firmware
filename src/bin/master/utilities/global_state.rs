@@ -6,6 +6,7 @@ use std::{
 use esp_idf_svc::{
     espnow::EspNow,
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
+    sntp::EspSntp,
     wifi::{BlockingWifi, EspWifi},
 };
 use log::info;
@@ -23,6 +24,7 @@ pub struct GlobalState {
     pub(crate) is_connected_to_wifi: AtomicBool,
     pub(crate) esp_now: Mutex<Option<EspNow<'static>>>,
     pub(crate) tcp_stream: Mutex<Option<Client>>,
+    pub(crate) sntp: Mutex<Option<EspSntp<'static>>>,
 }
 
 impl Debug for GlobalState {
@@ -53,6 +55,7 @@ impl GlobalState {
             is_connected_to_wifi: AtomicBool::new(false),
             esp_now: Mutex::new(None),
             tcp_stream: Mutex::new(None),
+            sntp: Mutex::new(None),
         };
         GLOBAL_STATE
             .set(Arc::new(gs))

@@ -4,3 +4,5 @@ TODO:
 - [x] Salva ssid, pwd and server ip nell'nvs cosi non si deve settare tutto ogni volta
 - [ ] Riconnessone se la connessione è persa
 - [ ] LED di stato
+- [ ] Timestamp nei messaggi
+- [ ] Test SD
