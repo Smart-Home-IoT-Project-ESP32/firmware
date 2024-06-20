@@ -26,11 +26,17 @@
   id:
     raw-std: 0x02
   fields:
-    - name: "Gas Leakage"
+    - name: "Gas Data"
       description: "Gas Leakage sensor data"
       content:
         variable:
           type: u16
+
+    - name: "Leakage"
+      description: "True if gas leakage is detected. False otherwise."
+      content:
+        variable:
+          type: bool
 
     - name: "Device ID"
       description: "Device ID of the sender."
@@ -39,6 +45,12 @@
         variable:
           type: u8
 
+    - name: "Padding"
+      description: "Padding of 7 bits"
+      content:
+          padding:
+            bits: 7
+      
 - name: "Temperature"
   description: "Temperature of the environment."
   id:

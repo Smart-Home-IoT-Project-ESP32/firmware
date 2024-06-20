@@ -8,11 +8,9 @@ use embedded_svc::wifi::Configuration;
 use esp_idf_hal::adc::config::Resolution::Resolution12Bit;
 use esp_idf_hal::adc::*;
 use esp_idf_hal::delay::BLOCK;
-use esp_idf_hal::gpio::Gpio10;
 use esp_idf_hal::gpio::Gpio11;
+use esp_idf_hal::gpio::Gpio5;
 use esp_idf_hal::peripherals::Peripherals;
-
-use esp_idf_hal::task::notification::Notification;
 use esp_idf_hal::task::wait_notification;
 use esp_idf_svc::espnow::SendStatus;
 use esp_idf_svc::espnow::{EspNow, PeerInfo};
@@ -32,6 +30,7 @@ use std::thread;
 use std::time::Duration;
 
 static IS_SEARCHING_CHANNEL: AtomicBool = AtomicBool::new(true);
+const GAS_THRESHOLD: u16 = 2000;
 
 fn main() {
     // Init
@@ -54,12 +53,13 @@ fn main() {
     let mut adc_2: AdcDriver<ADC2> = AdcDriver::new(peripherals.adc2, &adc_config).unwrap();
 
     // LM35 sensor (adc_1)
-    let mut lm35_temp_pin: AdcChannelDriver<'_, { attenuation::DB_11 }, Gpio10> =
-        AdcChannelDriver::new(peripherals.pins.gpio10).unwrap();
+    let mut lm35_temp_pin: AdcChannelDriver<'_, { attenuation::DB_11 }, Gpio11> =
+        AdcChannelDriver::new(peripherals.pins.gpio11).unwrap();
 
     // Gas sensor (adc_2)
-    let mut gas_pin: AdcChannelDriver<'_, { attenuation::DB_11 }, Gpio11> =
-        AdcChannelDriver::new(peripherals.pins.gpio11).unwrap();
+    let mut gas_pin: AdcChannelDriver<'_, { attenuation::DB_11 }, Gpio5> =
+        AdcChannelDriver::new(peripherals.pins.gpio5).unwrap();
+    let mut is_gas_leakage = false;
 
     // ------------------------------ //
     //            ESP-NOW             //
@@ -92,10 +92,9 @@ fn main() {
     let esp_now = EspNow::take().unwrap();
 
     // Create a channel to communicate between threads
-    let (sender, reciver) = std::sync::mpsc::sync_channel(10);
+    let (sender, reciever) = std::sync::mpsc::sync_channel(10);
     // Notification to search for a master board on other channels
-    let channel_search = Notification::new();
-    let channel_search_notifier = channel_search.notifier();
+    let (channel_search_sender, _channel_search_notifier) = std::sync::mpsc::sync_channel(1);
 
     // register reciving callback, this is used to add master board to the peer list
     esp_now
@@ -127,11 +126,8 @@ fn main() {
             }
 
             if num_fail > 10 {
-                // Safty: we don't call mem::forget on the Notification
-                unsafe {
-                    channel_search_notifier.notify(core::num::NonZeroU32::new(1).unwrap());
-                }
                 IS_SEARCHING_CHANNEL.store(true, Ordering::Relaxed);
+                let _ = channel_search_sender.try_send(());
             }
         })
         .unwrap();
@@ -144,12 +140,16 @@ fn main() {
     let sender_lm35 = sender.clone();
     std::thread::spawn(move || loop {
         // Read the data from the lm35 sensor using ADC
-        let lm35_raw_data = adc_1.read(&mut lm35_temp_pin).unwrap();
+        let lm35_raw = adc_2.read(&mut lm35_temp_pin).unwrap();
         // Convert the raw data to temperature
-        let lm35_preprocessed_data = convert_lm35_data(lm35_raw_data);
+        let lm35_data = convert_lm35_data(lm35_raw);
+        println!(
+            "LM35: raw data: {} - preprocessed data: {}",
+            lm35_raw, lm35_data
+        );
         // Create a message with the temperature and send it to the main task
         let message_temp =
-            TemperatureMessage::new().with_temperature(lm35_preprocessed_data.try_into().unwrap());
+            TemperatureMessage::new().with_temperature(lm35_data.try_into().unwrap());
         let frame: Frame = message_temp.into();
         sender_lm35.send(frame).unwrap();
 
@@ -159,9 +159,15 @@ fn main() {
     // Create a thread to read the gas sensor
     std::thread::spawn(move || loop {
         // Read the data from the gas sensor using ADC
-        let gas_data: u16 = adc_2.read(&mut gas_pin).unwrap();
+        let gas_data: u16 = adc_1.read(&mut gas_pin).unwrap();
+        println!("Gas sensor: raw data: {}", gas_data);
+        if gas_data > GAS_THRESHOLD {
+            println!("Gas leakage detected");
+            is_gas_leakage = true;
+        }
+        // If the gas data is greater than 2000, there is a gas leakage
         // Create a message with the gas data and send it to the main task
-        let gas_message = GasLeakageMessage::new().with_gas_leakage(gas_data);
+        let gas_message = GasLeakageMessage::new().with_gas_data(gas_data).with_leakage(is_gas_leakage);
         let frame: Frame = gas_message.into();
         sender.send(frame).unwrap();
         thread::sleep(Duration::from_secs(5));
@@ -185,7 +191,8 @@ fn main() {
     // Main task
     loop {
         // Wait for a message
-        let frame_to_send = reciver.recv().unwrap();
+        let frame_to_send = reciever.recv().unwrap();
+        // println!("Sending message: {:?}", frame_to_send);
         // If a peer is available, send the message
         if let Ok(peer) = esp_now.fetch_peer(true) {
             esp_now
@@ -198,18 +205,21 @@ fn main() {
 /// Convert the raw data from the LM35 sensor to temperature.
 ///
 /// The `voltage` is calculated by:
-/// * multyplying the raw data 3.1, which is the attenuation of the ADC in Volts
-/// * and dividing it by 4095, which is the number of bits of the ADC [2^12-1].
+/// * multyplying the raw data 3100, which is the maximum measurable input analog 
+///   voltage of the ADC with attenuation DB_11
+/// * and dividing it by 4095, which is the number of bits of the ADC [2^12-1]
 ///
-/// The `temperature` is calculated by multiplying the `voltage` by 100,
+///
+/// The `temperature` is calculated by dividing the `voltage` by 10,
 /// which is the temperature in Celsius.
 ///
 ///
 /// # Arguments
 ///
 /// * `raw_data` - The raw data from the LM35 sensor.
-///
+/// 
 pub fn convert_lm35_data(raw_data: u16) -> f32 {
-    let voltage = raw_data as f32 * 3.1 / 4095.0;
-    voltage * 100.0
+    let voltage = raw_data as f32 * 3100.0 / 4095.0;
+    // println!("Voltage: {}", voltage);
+    (voltage / 10.0)
 }
