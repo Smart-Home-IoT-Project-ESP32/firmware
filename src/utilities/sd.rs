@@ -84,22 +84,26 @@ where
 
     /// Read frames from sd card, will read a block of 512 bytes at a time
     pub fn read(&mut self) -> Result<Vec<Frame>, SDError> {
+        let mut vec = Vec::new();
         let length = self.file.length();
-        if length == 0 {
-            return Ok(Vec::new());
+        if length != 0 {
+            let mut buffer = [0u8; FAT_SECTOR_SIZE];
+            // read the last block of the file
+            let seek_offset = length % FAT_SECTOR_SIZE as u32;
+            self.file.seek_from_end(seek_offset)?;
+            let bytes_read = self
+                .controller
+                .read(&self.volume, &mut self.file, &mut buffer)?;
+
+            // put in vec all the bytes read + the remaining bytes from the last read
+            let mut vec = buffer[..bytes_read].to_vec();
+            vec.append(&mut self.out_buffer);
         }
-        let mut buffer = [0u8; FAT_SECTOR_SIZE];
-        // read the last block of the file
-        let seek_offset = length % FAT_SECTOR_SIZE as u32;
-        self.file.seek_from_end(seek_offset)?;
-        let bytes_read = self
-            .controller
-            .read(&self.volume, &mut self.file, &mut buffer)?;
 
-        // put in vec all the bytes read + the remaining bytes from the last read
-        let mut vec = buffer[..bytes_read].to_vec();
-        vec.append(&mut self.out_buffer);
-
+        if self.in_buffer.len() > 0 {
+            vec.append(&mut self.in_buffer);
+        }
+        
         // Deserialize the frames
         let frames = Frame::deserialize_many(&mut vec)?;
 
