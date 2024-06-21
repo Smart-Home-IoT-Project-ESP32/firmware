@@ -167,7 +167,9 @@ fn main() {
         }
         // If the gas data is greater than 2000, there is a gas leakage
         // Create a message with the gas data and send it to the main task
-        let gas_message = GasLeakageMessage::new().with_gas_data(gas_data).with_leakage(is_gas_leakage);
+        let gas_message = GasLeakageMessage::new()
+            .with_gas_data(gas_data)
+            .with_leakage(is_gas_leakage);
         let frame: Frame = gas_message.into();
         sender.send(frame).unwrap();
         thread::sleep(Duration::from_secs(5));
@@ -205,7 +207,7 @@ fn main() {
 /// Convert the raw data from the LM35 sensor to temperature.
 ///
 /// The `voltage` is calculated by:
-/// * multyplying the raw data 3100, which is the maximum measurable input analog 
+/// * multyplying the raw data 3100, which is the maximum measurable input analog
 ///   voltage of the ADC with attenuation DB_11
 /// * and dividing it by 4095, which is the number of bits of the ADC [2^12-1]
 ///
@@ -217,9 +219,9 @@ fn main() {
 /// # Arguments
 ///
 /// * `raw_data` - The raw data from the LM35 sensor.
-/// 
+///
 pub fn convert_lm35_data(raw_data: u16) -> f32 {
     let voltage = raw_data as f32 * 3100.0 / 4095.0;
     // println!("Voltage: {}", voltage);
-    (voltage / 10.0)
+    voltage / 10.0
 }
