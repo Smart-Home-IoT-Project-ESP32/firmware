@@ -1,5 +1,5 @@
 use core::time::Duration;
-use std::{collections::HashMap, sync::mpsc::SyncSender, thread::sleep, time::SystemTime};
+use std::{collections::HashMap, fmt::Write, thread::sleep, time::SystemTime};
 
 use embedded_sdmmc::SdMmcSpi;
 use embedded_svc::{
@@ -17,48 +17,27 @@ use firmware::{
     utilities::{init::init, sd::SD},
 };
 use messages::Frame;
-use serde::Serialize;
 use std::thread;
-use utilities::{global_state::GlobalState, http_server::request_handler_thread, tcp_client};
+use utilities::{
+    constants::{BROADCAST_PING_INTERVAL, SD_RETRY_INTERVAL, SSID, STACK_SIZE},
+    espnow::espnow_recv_cb,
+    global_state::GlobalState,
+    http_server::request_handler_thread,
+    tcp_client,
+};
 
 use esp_idf_hal::sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
 use esp_idf_svc::{
     espnow::{EspNow, BROADCAST},
     http::server::EspHttpServer,
-    sntp,
 };
 
 use esp_idf_svc::eventloop::*;
 use esp_idf_svc::nvs::*;
 use esp_idf_svc::wifi::*;
-use esp_idf_sys::ESP_NOW_MAX_DATA_LEN;
 use log::{info, warn};
 
 mod utilities;
-
-const MAX_DATA_LEN: usize = ESP_NOW_MAX_DATA_LEN as usize;
-// Need lots of stack to parse JSON
-const STACK_SIZE: usize = 10240;
-/// AP SSID
-const SSID: &str = "Smart Home Hub";
-/// Default TCP server address (telegraf)
-const TCP_SERVER_ADDR: &str = "tcp://4.232.184.193:8094";
-/// Broadcast ping frequency (interval)
-const BROADCAST_PING_INTERVAL: Duration = Duration::from_secs(2);
-/// Sd retry frequency (interval)
-const SD_RETRY_INTERVAL: Duration = Duration::from_secs(2);
-
-/// Callback invoked when a frame is received from the ESP-NOW.
-/// Sends the received data to the main thread with a channel.
-fn espnow_recv_cb(
-    mac_addr: &[u8],
-    data: &[u8],
-    channel: &SyncSender<(Vec<u8>, heapless::Vec<u8, MAX_DATA_LEN>)>,
-) {
-    let vec_data = heapless::Vec::<u8, MAX_DATA_LEN>::from_slice(data).unwrap();
-
-    channel.send((mac_addr.to_vec(), vec_data)).unwrap();
-}
 
 fn main() {
     // Patches, logger and watchdog reconfiguration
@@ -114,18 +93,22 @@ fn main() {
 
     // Start WiFi
     wifi.start().unwrap();
-    if let Configuration::Mixed(_, _) = config {
-        gs.is_connected_to_wifi
-            .store(true, core::sync::atomic::Ordering::Relaxed);
-        wifi.connect().unwrap();
 
-        // Start SNTP service
-        let sntp = sntp::EspSntp::new_default().expect("Failed to initialize SNTP");
-        info!("SNTP initialized");
-        // Keeping it around or else the SNTP service will stop
-        gs.sntp.lock().unwrap().replace(sntp);
-    }
-    wifi.wait_netif_up().unwrap();
+    // Thread to handle Wi-Fi connection and reconnection
+    let _ = thread::Builder::new()
+        .name("WiFi connection".to_string())
+        .spawn(crate::utilities::wifi::connection_task);
+
+    // if let Configuration::Mixed(_, _) = config {
+    //     // TODO: se all'inizio non c'è il wifi acceso e faccio la connect panica
+    //     gs.is_connected_to_wifi
+    //         .store(true, core::sync::atomic::Ordering::Relaxed);
+    //     if let Err(e) = wifi.connect() {
+    //         // TODO: Manage the error
+    //     }
+    //
+    // }
+    // wifi.wait_netif_up().unwrap();
 
     // Store the wifi in the global state
     gs.wifi.lock().unwrap().replace(wifi);
@@ -173,10 +156,7 @@ fn main() {
         .unwrap();
 
     // If connected to wifi, connect to the TCP server
-    if gs
-        .is_connected_to_wifi
-        .load(core::sync::atomic::Ordering::Relaxed)
-    {
+    if utilities::wifi::is_connected() {
         tcp_client::connect();
     }
 
@@ -254,32 +234,6 @@ fn main() {
     // Hash for deserializing the frames from ESP-NOW
     let mut hash = HashMap::new();
 
-    // Search for saved IDs in the NVS
-    let mut buf = [0; 63];
-    let slaves_id = gs
-        .nvs_connect_configs_ns
-        .lock()
-        .unwrap()
-        .get_str("Slaves IDs", &mut buf)
-        .unwrap();
-    let mut slaves_id: HashMap<Vec<u8>, u8> = if let Some(slaves_id_str) = slaves_id {
-        serde_json::from_str(slaves_id_str).unwrap()
-    } else {
-        // Save in the NVs
-        let slaves_id = HashMap::new();
-        let mut buf = Vec::new();
-        let mut ser = serde_json::Serializer::new(&mut buf);
-        hash.serialize(&mut ser).unwrap();
-        let str = std::str::from_utf8(&buf).unwrap();
-        gs.nvs_connect_configs_ns
-            .lock()
-            .unwrap()
-            .set_str("Slaves IDs", str)
-            .unwrap();
-
-        slaves_id
-    };
-
     // Spawning a thread to handle the requests from the HTTP server (i.e. the
     // configuration changes).
     let _ = thread::Builder::new()
@@ -305,6 +259,7 @@ fn main() {
                 > BROADCAST_PING_INTERVAL
         {
             if let Some(esp_now) = gs.esp_now.lock().unwrap().as_mut() {
+                info!("Broadcasting ping message");
                 let message = firmware::PingMessage::new();
                 let frame: Frame = message.into();
                 if let Err(e) = esp_now.send(BROADCAST, &frame.serialize()) {
@@ -327,37 +282,33 @@ fn main() {
         }
 
         // Write IDs to each frame
-        let mut changed_slaves_id = false;
-        let mut len = slaves_id.len();
         let mut frames_with_id: Vec<Frame> = Vec::new();
         for (mac_addr, frames) in frames_hash {
-            let id = slaves_id.entry(mac_addr).or_insert_with(|| {
-                changed_slaves_id = true;
-                len += 1;
-                (len - 1) as u8
-            });
+            let nvs = gs.nvs_connect_configs_ns.lock().unwrap();
+            let id = nvs
+                .get_u8(&mac_addr.iter().map(|n| n.to_string()).collect::<String>())
+                .unwrap()
+                .unwrap_or_else(|| {
+                    let len = nvs.get_u8("Num of slaves").unwrap().unwrap_or_else(|| {
+                        nvs.set_u8("Num of slaves", 0).unwrap();
+                        0
+                    });
+                    let mac_addr = &mac_addr.iter().fold(String::new(), |mut output, n| {
+                        let _ = write!(output, "{n:02X}");
+                        output
+                    });
+                    nvs.set_u8(mac_addr, len).unwrap();
+                    len
+                });
 
             frames_with_id = frames
                 .iter()
                 .filter_map(|frame| frame.try_into().ok())
                 .map(|mut message| {
-                    set_message_device_id(&mut message, *id).unwrap();
+                    set_message_device_id(&mut message, id).unwrap();
                     message.into()
                 })
                 .collect();
-        }
-
-        // Save in the NVS the new IDs
-        if changed_slaves_id {
-            let mut buf = Vec::new();
-            let mut ser = serde_json::Serializer::new(&mut buf);
-            hash.serialize(&mut ser).unwrap();
-            let str = std::str::from_utf8(&buf).unwrap();
-            gs.nvs_connect_configs_ns
-                .lock()
-                .unwrap()
-                .set_str("Slaves IDs", str)
-                .unwrap();
         }
 
         // Frames from slaves are timestamped with the time of the reception
@@ -373,10 +324,7 @@ fn main() {
             })
             .collect::<Vec<_>>();
 
-        if gs
-            .is_connected_to_wifi
-            .load(core::sync::atomic::Ordering::Relaxed)
-        {
+        if utilities::wifi::is_connected() {
             // If there is a connection to the Wi-Fi, send the data to the server
 
             // Extend the frames with the data from the SD card (if any)
@@ -408,7 +356,8 @@ fn main() {
             }
 
             // Send the data to the server
-            if let Some(stream) = gs.tcp_stream.lock().unwrap().as_mut() {
+            let mut tcp_stream = gs.tcp_stream.lock().unwrap();
+            if let Some(stream) = tcp_stream.as_mut() {
                 for frame in frames_with_id {
                     let influx_lp = frame.to_point().unwrap();
                     if let Err(e) = stream.write_point(&influx_lp) {
@@ -422,12 +371,14 @@ fn main() {
                     }
                 }
             } else {
+                drop(tcp_stream);
                 // TCP was not initialized yet
                 tcp_client::connect();
             }
         } else if let Some(mut sd_inner) = sd {
             // There is no connection, store data in the SD card
             for frame in frames_with_id {
+                println!("Frame salvato sulla SD: {:?}", frame.to_point().unwrap());
                 // TODO: what to do if sd is not working?
                 sd_inner.write(&frame).unwrap();
             }

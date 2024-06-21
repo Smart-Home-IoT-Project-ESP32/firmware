@@ -100,10 +100,10 @@ where
             vec.append(&mut self.out_buffer);
         }
 
-        if self.in_buffer.len() > 0 {
+        if !self.in_buffer.is_empty() {
             vec.append(&mut self.in_buffer);
         }
-        
+
         // Deserialize the frames
         let frames = Frame::deserialize_many(&mut vec)?;
 

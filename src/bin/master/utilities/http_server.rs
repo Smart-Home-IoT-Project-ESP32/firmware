@@ -7,14 +7,12 @@ use embedded_svc::http::Headers;
 use esp_idf_hal::io::{EspIOError, Read, Write};
 use esp_idf_svc::http::server::{EspHttpConnection, Request};
 use esp_idf_svc::sntp;
-use esp_idf_svc::wifi::{
-    self, AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration,
-};
-use esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
+use esp_idf_svc::wifi::{self, AccessPointConfiguration, AuthMethod, ClientConfiguration};
 use log::info;
 use serde::Deserialize;
 
-use crate::SSID;
+use crate::utilities;
+use crate::utilities::constants::SSID;
 
 /// Max payload length
 const MAX_LEN: usize = 128;
@@ -101,9 +99,6 @@ pub fn request_handler_thread(
                 // ---------------- //
                 // WIFI reconfigure //
                 // ---------------- //
-                // Signal disconnection
-                gs.is_connected_to_wifi
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 // Disconnect from the current Wi-Fi
                 let mut wifi_option_lock = gs.wifi.lock().unwrap();
                 let wifi_lock = wifi_option_lock.as_mut().unwrap();
@@ -172,47 +167,7 @@ pub fn request_handler_thread(
                 // ------- //
                 // ESP-NOW //
                 // ------- //
-                // Get espnow from global state
-                let espnow_option_lock = gs.esp_now.lock().unwrap();
-                let espnow = espnow_option_lock
-                    .as_ref()
-                    .expect("ESP-NOW not initialized");
-
-                // Get the new channel
-                let channel = unsafe {
-                    esp_idf_hal::sys::esp_wifi_set_promiscuous(true);
-                    let channel = match wifi_lock.get_configuration().unwrap() {
-                        Configuration::Mixed(client, _) => client.channel.expect("Channel not set"),
-                        _ => panic!("Invalid configuration"),
-                    };
-                    let second = wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
-                    esp_idf_hal::sys::esp_wifi_set_channel(channel, second);
-                    esp_idf_hal::sys::esp_wifi_set_promiscuous(false);
-                    channel
-                };
-
-                // Modify channel in the broadcast peer
-                let broadcast = esp_idf_hal::sys::esp_now_peer_info {
-                    channel,
-                    ifidx: esp_idf_hal::sys::wifi_interface_t_WIFI_IF_AP,
-                    encrypt: false,
-                    peer_addr: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
-                    ..Default::default()
-                };
-                // Check if the broadcast is already added
-                if espnow.get_peer(broadcast.peer_addr).is_err() {
-                    espnow.add_peer(broadcast).unwrap();
-                } else {
-                    espnow.mod_peer(broadcast).unwrap();
-                }
-
-                // Drop the lock
-                drop(espnow_option_lock);
-
-                // Signal connection
-                info!("Signaling connection");
-                gs.is_connected_to_wifi
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                utilities::espnow::reconfigure_broadcast(wifi_lock);
             }
             Err(err) => {
                 if let std::sync::mpsc::TryRecvError::Empty = err {

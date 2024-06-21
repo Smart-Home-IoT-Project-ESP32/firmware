@@ -1,7 +1,7 @@
 use log::{info, warn};
 use telegraf::Client;
 
-use crate::TCP_SERVER_ADDR;
+use crate::utilities::constants::TCP_SERVER_ADDR;
 
 /// Connect to the TCP server with the IP address stored in the NVS.
 pub fn connect() {
@@ -22,7 +22,6 @@ pub fn connect() {
             "Trying with default TCP server address: {}",
             TCP_SERVER_ADDR
         );
-
         gs.nvs_connect_configs_ns
             .lock()
             .unwrap()
