@@ -4,7 +4,7 @@ use std::{thread, time::SystemTime};
 use esp_idf_svc::sntp;
 use log::{info, warn};
 
-use crate::utilities;
+use crate::utilities::{self, constants::ESP_NOW_INIT_TIMEOUT};
 
 use super::{constants::WIFI_RETRY_INTERVAL, global_state::GlobalState};
 
@@ -40,12 +40,17 @@ pub fn connection_task() {
                         drop(wifi_option_lock);
 
                         // Wait for ESP-NOW to be initialized
+                        let now = SystemTime::now();
                         loop {
+                            // Check if time limit is reached
+                            if now.elapsed().unwrap() > ESP_NOW_INIT_TIMEOUT {
+                                panic!("ESP-NOW initialization time limit reached")
+                            }
+
                             if gs.esp_now.lock().unwrap().is_some() {
                                 break;
                             }
                             thread::sleep(Duration::from_millis(500));
-                            // TODO: timelimit
                         }
 
                         // Acquire the lock again
@@ -85,13 +90,6 @@ pub fn is_connected() -> bool {
     let gs = GlobalState::get();
     let binding = gs.wifi.lock().unwrap();
     let wifi_lock = binding.as_ref();
-    // if wifi_lock.is_none() {
-    //     return false;
-    // }
-    // matches!(
-    //     wifi_lock.unwrap().get_configuration(),
-    //     Ok(wifi::Configuration::Mixed(_, _)) | Ok(wifi::Configuration::Client(_))
-    // )
     wifi_lock
         .unwrap()
         .wifi()

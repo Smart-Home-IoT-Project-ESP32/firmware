@@ -1,3 +1,4 @@
+#![feature(let_chains)]
 use core::time::Duration;
 use std::{collections::HashMap, fmt::Write, thread::sleep, time::SystemTime};
 
@@ -35,7 +36,7 @@ use esp_idf_svc::{
 use esp_idf_svc::eventloop::*;
 use esp_idf_svc::nvs::*;
 use esp_idf_svc::wifi::*;
-use log::{info, warn};
+use log::{error, info, warn};
 
 mod utilities;
 
@@ -51,6 +52,14 @@ fn main() {
     let nvs_default_partition = EspDefaultNvsPartition::take().unwrap();
     GlobalState::init(nvs_default_partition.clone());
     let gs = GlobalState::get();
+
+    // Init status LEDs
+    // Wi-Fi status LED
+    let mut blue_led = PinDriver::output(peripherals.pins.gpio15).unwrap();
+    // Blinking when receiving data from the corresponding slaves
+    let mut green_led1 = PinDriver::output(peripherals.pins.gpio16).unwrap();
+    let mut green_led2 = PinDriver::output(peripherals.pins.gpio17).unwrap();
+    let mut green_led3 = PinDriver::output(peripherals.pins.gpio18).unwrap();
 
     // ----------- //
     // WIFI config //
@@ -71,7 +80,6 @@ fn main() {
     let config = if wifi.get_configuration().unwrap() == Configuration::None {
         info!("No WiFi configuration found");
         info!("Creating AP config");
-        // TODO: better instructions
         info!("To configure the device connect to the Wi-Fi network: {:?}. Go to the IP address below and submit the form", SSID);
 
         // Access Point configuration
@@ -98,17 +106,6 @@ fn main() {
     let _ = thread::Builder::new()
         .name("WiFi connection".to_string())
         .spawn(crate::utilities::wifi::connection_task);
-
-    // if let Configuration::Mixed(_, _) = config {
-    //     // TODO: se all'inizio non c'è il wifi acceso e faccio la connect panica
-    //     gs.is_connected_to_wifi
-    //         .store(true, core::sync::atomic::Ordering::Relaxed);
-    //     if let Err(e) = wifi.connect() {
-    //         // TODO: Manage the error
-    //     }
-    //
-    // }
-    // wifi.wait_netif_up().unwrap();
 
     // Store the wifi in the global state
     gs.wifi.lock().unwrap().replace(wifi);
@@ -169,16 +166,16 @@ fn main() {
 
     let spi = SpiDeviceDriver::new_single(
         peripherals.spi2,
-        peripherals.pins.gpio1,
-        peripherals.pins.gpio2,
-        Some(peripherals.pins.gpio0),
+        peripherals.pins.gpio6,
+        peripherals.pins.gpio5,
+        Some(peripherals.pins.gpio4),
         Option::<AnyIOPin>::None,
         &DriverConfig::default(),
         &spi_config,
     )
     .unwrap();
 
-    let sdmmc_cs = PinDriver::output(peripherals.pins.gpio42).unwrap();
+    let sdmmc_cs = PinDriver::output(peripherals.pins.gpio7).unwrap();
     // Build an SDHandle Card interface out of an SPI device
     let mut spi_device = SdMmcSpi::new(spi, sdmmc_cs);
 
@@ -285,28 +282,52 @@ fn main() {
         let mut frames_with_id: Vec<Frame> = Vec::new();
         for (mac_addr, frames) in frames_hash {
             let nvs = gs.nvs_connect_configs_ns.lock().unwrap();
-            let id = nvs
-                .get_u8(&mac_addr.iter().map(|n| n.to_string()).collect::<String>())
-                .unwrap()
-                .unwrap_or_else(|| {
-                    let len = nvs.get_u8("Num of slaves").unwrap().unwrap_or_else(|| {
-                        nvs.set_u8("Num of slaves", 0).unwrap();
-                        0
-                    });
-                    let mac_addr = &mac_addr.iter().fold(String::new(), |mut output, n| {
-                        let _ = write!(output, "{n:02X}");
-                        output
-                    });
-                    nvs.set_u8(mac_addr, len).unwrap();
-                    len
+            let mac_addr_str = &mac_addr.iter().fold(String::new(), |mut output, n| {
+                let _ = write!(output, "{n:02X}");
+                output
+            });
+            let id = nvs.get_u8(mac_addr_str).unwrap().unwrap_or_else(|| {
+                let len = nvs.get_u8("Num of slaves").unwrap().unwrap_or_else(|| {
+                    nvs.set_u8("Num of slaves", 0).unwrap();
+                    0
                 });
+                info!("New slave found: {}", mac_addr_str);
+
+                nvs.set_u8(mac_addr_str, len).unwrap();
+                info!("Assigned ID: {}", len);
+
+                nvs.set_u8("Num of slaves", len + 1).unwrap();
+                info!("New number of slaves: {}", len + 1);
+                len
+            });
 
             frames_with_id = frames
                 .iter()
                 .filter_map(|frame| frame.try_into().ok())
                 .map(|mut message| {
+                    // Turn on the green LED corresponding to the device ID
+                    if id == 0 {
+                        green_led1.set_high().unwrap();
+                    } else if id == 1 {
+                        green_led2.set_high().unwrap();
+                    } else if id == 2 {
+                        green_led3.set_high().unwrap();
+                    }
+
+                    // Set the device ID
                     set_message_device_id(&mut message, id).unwrap();
-                    message.into()
+                    let frame = message.into();
+
+                    // Turn off the green LED corresponding to the device ID
+                    if id == 0 {
+                        green_led1.set_low().unwrap();
+                    } else if id == 1 {
+                        green_led2.set_low().unwrap();
+                    } else if id == 2 {
+                        green_led3.set_low().unwrap();
+                    }
+
+                    frame
                 })
                 .collect();
         }
@@ -324,31 +345,26 @@ fn main() {
             })
             .collect::<Vec<_>>();
 
+        let mut sent = false;
         if utilities::wifi::is_connected() {
+            // If connected to the Wi-Fi, turn on the Wi-Fi status LED
+            blue_led.set_high().unwrap();
+
             // If there is a connection to the Wi-Fi, send the data to the server
 
             // Extend the frames with the data from the SD card (if any)
             if let Some(mut sd_inner) = sd {
-                // info!("Reading from the SD card");
                 let sd_frames = sd_inner.read();
                 if sd_frames.is_err() {
                     warn!("Failed to read from the SD card");
                 }
                 frames_with_id.extend(sd_frames.unwrap_or_default());
 
-                // // Try to write something
-                // let message = firmware::PingMessage::new();
-                // info!("Writing {:#?} to the SD card", message);
-                // if let Err(e) = sd_inner.write(&message.into()) {
-                //     warn!("Failed to write to the SD card: {:?}", e);
-                // }
-
-                // TODO: is there a way to make it work without reinitializing the SD card
-                // option every time?
                 sd = Some(sd_inner);
             } else if last_sd_retry.is_none()
                 || last_sd_retry.unwrap().elapsed().unwrap() > SD_RETRY_INTERVAL
             {
+                warn!("SD card not initialized. Trying to recover...");
                 // Try to recover the SD card
                 drop(sd);
                 sd = SD::new(&mut spi_device).ok();
@@ -358,37 +374,55 @@ fn main() {
             // Send the data to the server
             let mut tcp_stream = gs.tcp_stream.lock().unwrap();
             if let Some(stream) = tcp_stream.as_mut() {
-                for frame in frames_with_id {
-                    let influx_lp = frame.to_point().unwrap();
-                    if let Err(e) = stream.write_point(&influx_lp) {
-                        warn!("Failed to send data to the TCP server: {:?}", e);
-                        // TODO: If its peer not found it is normal if the WiFi is not
-                        // configured yet because we need to know the channel to add the
-                        // peers
-                        // if e.kind() == ...
-                        //     warn!("Configure the WiFi first");
-                        // }
+                if !frames_with_id.is_empty() {
+                    info!("Sending {:#?} to the TCP server", frames_with_id.len());
+                }
+                for frame in frames_with_id.clone() {
+                    //info!("Sending data to the TCP server: {:?}", frame);
+                    if let Ok(influx_lp) = frame.to_point() {
+                        if let Err(e) = stream.write_point(&influx_lp) {
+                            warn!("Failed to send data to the TCP server: {:?}", e);
+                            // TODO: If its peer not found it is normal if the WiFi is not
+                            // configured yet because we need to know the channel to add the
+                            // peers
+                            // if e.kind() == ...
+                            //     warn!("Configure the WiFi first");
+                            // }
+                        }
+                    } else {
+                        warn!(
+                            "Failed to convert the frame {:?} to InfluxDB line protocol",
+                            frame
+                        );
                     }
                 }
+                sent = true;
             } else {
                 drop(tcp_stream);
+
                 // TCP was not initialized yet
+                // TODO: create a thread for that? It is blocking main thread for too long
                 tcp_client::connect();
             }
-        } else if let Some(mut sd_inner) = sd {
+        } else {
+            // If not connected to the Wi-Fi, turn off the Wi-Fi status LED
+            blue_led.set_low().unwrap();
+        }
+
+        if !sent && let Some(mut sd_inner) = sd {
             // There is no connection, store data in the SD card
             for frame in frames_with_id {
-                println!("Frame salvato sulla SD: {:?}", frame.to_point().unwrap());
-                // TODO: what to do if sd is not working?
-                sd_inner.write(&frame).unwrap();
+                if let Err(err) = sd_inner.write(&frame) {
+                    error!("Failed to write to the SD card: {:?}", err);
+                }
             }
 
-            // TODO: is there a way to make it work without reinitializing the SD card
-            // option every time?
             sd = Some(sd_inner);
-        } else if last_sd_retry.is_none()
-            || last_sd_retry.unwrap().elapsed().unwrap() > SD_RETRY_INTERVAL
+        } else if sd.is_none()
+            && (last_sd_retry.is_none()
+                || last_sd_retry.unwrap().elapsed().unwrap() > SD_RETRY_INTERVAL)
         {
+            warn!("SD card not initialized. Trying to recover...");
             // Try to recover the SD card
             drop(sd);
             sd = SD::new(&mut spi_device).ok();

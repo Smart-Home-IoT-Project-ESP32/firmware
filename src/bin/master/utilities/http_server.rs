@@ -18,9 +18,6 @@ use crate::utilities::constants::SSID;
 const MAX_LEN: usize = 128;
 /// Include the HTML page
 static INDEX_HTML: &str = include_str!("server_page.html");
-/// TODO: remove below const
-/// TCP server address (telegraf)
-// const TCP_SERVER_ADDR: &str = "192.168.137.1:8094";
 
 #[derive(Deserialize)]
 /// Input form data structure.
@@ -93,9 +90,6 @@ pub fn request_handler_thread(
 
         match receiver.try_recv() {
             Ok((ssid, password, new_ip)) => {
-                // FIXME: così ogni volta si deve riscrivere tutta la configurazione (se si
-                // vuole cambiare solo l'ip bisogna riscrivere anche ssid e pwd)
-
                 // ---------------- //
                 // WIFI reconfigure //
                 // ---------------- //

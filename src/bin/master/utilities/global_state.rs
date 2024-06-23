@@ -17,7 +17,6 @@ static GLOBAL_STATE: OnceLock<Arc<GlobalState>> = OnceLock::new();
 /// Global state of the program.
 /// Initialized once at the beginning.
 /// Can be accessed from any part of the program.
-/// TODO: check se vanno bene i lifetime static qua sotto
 pub struct GlobalState {
     pub(crate) nvs_connect_configs_ns: Mutex<EspNvs<NvsDefault>>,
     pub(crate) wifi: Mutex<Option<BlockingWifi<EspWifi<'static>>>>,
@@ -57,12 +56,6 @@ impl GlobalState {
             .set(Arc::new(gs))
             .expect("Global state already initialized");
     }
-
-    // TODO: fix the deinit
-    // pub fn deinit() {
-    //     // Auto drop the global state
-    //     let _ = GLOBAL_STATE.take();
-    // }
 
     /// Get the global state.
     pub fn get() -> Arc<GlobalState> {

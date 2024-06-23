@@ -5,11 +5,14 @@ use embedded_sdmmc::{
     Volume,
 };
 use esp_idf_hal::sys::{suseconds_t, time_t, timeval};
+use log::info;
 use messages::Frame;
 use std::fmt::Debug;
 use std::time::SystemTime;
 
 const FAT_SECTOR_SIZE: usize = 512;
+/// File name for the data file
+const FILE_NAME: &str = "DATA.txt";
 
 pub struct SD<'a, DR, CS>
 where
@@ -19,8 +22,8 @@ where
 {
     controller: Controller<BlockSpi<'a, DR, CS>, CurrentTime>,
     volume: Volume,
-    _directory: Directory,
-    file: File,
+    directory: Directory,
+    file: Option<File>,
     in_buffer: Vec<u8>,
     out_buffer: Vec<u8>,
 }
@@ -39,21 +42,21 @@ where
         // Try and access Volume 0 (i.e. the first partition)
         let mut volume = controller.get_volume(embedded_sdmmc::VolumeIdx(0))?;
         // Open the root directory
-        let _directory = controller.open_root_dir(&volume)?;
+        let directory = controller.open_root_dir(&volume)?;
 
         // create the file and open it
         let file = controller.open_file_in_dir(
             &mut volume,
-            &_directory,
-            "DATA.txt",
+            &directory,
+            FILE_NAME,
             embedded_sdmmc::Mode::ReadWriteCreateOrAppend,
         )?;
 
         let sd = Self {
             controller,
             volume,
-            _directory,
-            file,
+            directory,
+            file: Some(file),
             in_buffer: Vec::new(),
             out_buffer: Vec::new(),
         };
@@ -76,36 +79,63 @@ where
             return Ok(());
         }
 
-        self.controller
-            .write(&mut self.volume, &mut self.file, frame_data.as_slice())?;
+        if !self.file.as_ref().unwrap().eof() {
+            self.file.as_mut().unwrap().seek_from_end(0)?;
+        }
+
+        self.controller.write(
+            &mut self.volume,
+            self.file.as_mut().unwrap(),
+            frame_data.as_slice(),
+        )?;
 
         Ok(())
     }
 
     /// Read frames from sd card, will read a block of 512 bytes at a time
     pub fn read(&mut self) -> Result<Vec<Frame>, SDError> {
+        if self.file.as_ref().unwrap().eof() {
+            self.file.as_mut().unwrap().seek_from_start(0)?;
+        }
+
         let mut vec = Vec::new();
-        let length = self.file.length();
+        let length = self.file.as_ref().unwrap().length();
         if length != 0 {
             let mut buffer = [0u8; FAT_SECTOR_SIZE];
-            // read the last block of the file
-            let seek_offset = length % FAT_SECTOR_SIZE as u32;
-            self.file.seek_from_end(seek_offset)?;
-            let bytes_read = self
-                .controller
-                .read(&self.volume, &mut self.file, &mut buffer)?;
+            // read the first block of the file
+            let bytes_read =
+                self.controller
+                    .read(&self.volume, self.file.as_mut().unwrap(), &mut buffer)?;
 
-            // put in vec all the bytes read + the remaining bytes from the last read
-            let mut vec = buffer[..bytes_read].to_vec();
+            vec.extend_from_slice(&buffer[..bytes_read]);
             vec.append(&mut self.out_buffer);
         }
 
+        // If eof all data has been read, so we can delete the file and create a new one
+        if self.file.as_ref().unwrap().eof() && self.file.as_ref().unwrap().length() != 0 {
+            info!("All data in the SD card has been read");
+            self.controller
+                .close_file(&self.volume, self.file.take().unwrap())?;
+            self.controller
+                .delete_file_in_dir(&self.volume, &self.directory, FILE_NAME)?;
+            self.file = Some(self.controller.open_file_in_dir(
+                &mut self.volume,
+                &self.directory,
+                FILE_NAME,
+                embedded_sdmmc::Mode::ReadWriteCreateOrAppend,
+            )?);
+        }
+
         if !self.in_buffer.is_empty() {
+            //println!("Read {} bytes from in_buffer", self.in_buffer.len());
             vec.append(&mut self.in_buffer);
         }
 
         // Deserialize the frames
+        //println!("Deserializing from {:?}", vec);
         let frames = Frame::deserialize_many(&mut vec)?;
+        //println!("Remaining buffer is {:?}", vec);
+        //println!("Deserialized {:?}", frames);
 
         // save the remaining bytes
         self.out_buffer = vec;

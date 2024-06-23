@@ -15,3 +15,5 @@ pub const BROADCAST_PING_INTERVAL: Duration = Duration::from_secs(2);
 pub const SD_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 /// WiFi retry frequency (interval)
 pub const WIFI_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+/// ESP-NOW initialization time limit
+pub const ESP_NOW_INIT_TIMEOUT: Duration = Duration::from_secs(10);
