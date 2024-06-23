@@ -34,15 +34,13 @@ fn main() -> Result<(), anyhow::Error> {
     let mut esp_wifi = EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs.clone()))?;
     let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sys_loop.clone())?;
 
-    wifi.set_configuration(&Configuration::Client(
-        ClientConfiguration {
-            ssid: SSID.expect("Set a SSID").try_into().unwrap(),
-            bssid: None,
-            auth_method: AuthMethod::WPA2Personal,
-            password: PASSWORD.expect("Set a Password").try_into().unwrap(),
-            channel: None,
-        }
-    ))?;
+    wifi.set_configuration(&Configuration::Client(ClientConfiguration {
+        ssid: SSID.expect("Set a SSID").try_into().unwrap(),
+        bssid: None,
+        auth_method: AuthMethod::WPA2Personal,
+        password: PASSWORD.expect("Set a Password").try_into().unwrap(),
+        channel: None,
+    }))?;
 
     wifi.connect()?;
     info!("Wifi connected");
@@ -58,16 +56,19 @@ fn main() -> Result<(), anyhow::Error> {
 
     loop {
         if let Ok(reading) = dht11::Reading::read(&mut delay::Ets, &mut dhtt_pin) {
-            println!("Temperature: {}°C, Humidity: {}%", reading.temperature, reading.relative_humidity);
+            println!(
+                "Temperature: {}°C, Humidity: {}%",
+                reading.temperature, reading.relative_humidity
+            );
             // convert the reading to a message
-            let message_temp = TemperatureMessage::new()
-                .with_temperature(reading.temperature.try_into().unwrap());
+            let message_temp =
+                TemperatureMessage::new().with_temperature(reading.temperature.try_into().unwrap());
             let frame: Frame = message_temp.into();
-            client.write_point(&frame.to_point().unwrap());
-            
+            let _ = client.write_point(&frame.to_point().unwrap());
+
             let message_hum = HumidityMessage::new().with_humidity(reading.relative_humidity);
             let frame: Frame = message_hum.into();
-            client.write_point(&frame.to_point().unwrap());
+            let _ = client.write_point(&frame.to_point().unwrap());
         }
         thread::sleep(Duration::from_millis(2000))
     }

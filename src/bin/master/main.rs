@@ -382,12 +382,6 @@ fn main() {
                     if let Ok(influx_lp) = frame.to_point() {
                         if let Err(e) = stream.write_point(&influx_lp) {
                             warn!("Failed to send data to the TCP server: {:?}", e);
-                            // TODO: If its peer not found it is normal if the WiFi is not
-                            // configured yet because we need to know the channel to add the
-                            // peers
-                            // if e.kind() == ...
-                            //     warn!("Configure the WiFi first");
-                            // }
                         }
                     } else {
                         warn!(
@@ -401,7 +395,6 @@ fn main() {
                 drop(tcp_stream);
 
                 // TCP was not initialized yet
-                // TODO: create a thread for that? It is blocking main thread for too long
                 tcp_client::connect();
             }
         } else {
